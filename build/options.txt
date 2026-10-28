@@ -1,0 +1,8 @@
+lighting=1
+renderDistance=24
+fov=70
+renderScale=1
+sensitivity=0.5
+music=1
+vsync=0
+brightness=1

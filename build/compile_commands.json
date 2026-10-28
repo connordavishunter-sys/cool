@@ -1,0 +1,56 @@
+[
+{
+  "directory": "/home/connor/Ordis/build",
+  "command": "/usr/bin/c++ -DGLM_ENABLE_EXPERIMENTAL -DGLM_FORCE_DEPTH_ZERO_TO_ONE -isystem /usr/include/SDL2 -isystem /usr/include/rav1e -isystem /usr/include/svt-av1 -isystem /usr/include/webp -isystem /usr/include/harfbuzz -isystem /usr/include/glib-2.0 -isystem /usr/lib/glib-2.0/include -isystem /usr/include/sysprof-6 -isystem /usr/include/freetype2 -isystem /usr/include/libpng16 -O3 -DNDEBUG -std=gnu++20 -Wall -Wextra -Wno-missing-field-initializers -DHWY_SHARED_DEFINE -DAVIF_DLL -DEB_DLL -DRTC_BUILD=0 -D_GNU_SOURCE=1 -D_REENTRANT -pthread -DWITH_GZFILEOP -o CMakeFiles/ordis.dir/src/blocks.cpp.o -c /home/connor/Ordis/src/blocks.cpp",
+  "file": "/home/connor/Ordis/src/blocks.cpp",
+  "output": "/home/connor/Ordis/build/CMakeFiles/ordis.dir/src/blocks.cpp.o"
+},
+{
+  "directory": "/home/connor/Ordis/build",
+  "command": "/usr/bin/c++ -DGLM_ENABLE_EXPERIMENTAL -DGLM_FORCE_DEPTH_ZERO_TO_ONE -isystem /usr/include/SDL2 -isystem /usr/include/rav1e -isystem /usr/include/svt-av1 -isystem /usr/include/webp -isystem /usr/include/harfbuzz -isystem /usr/include/glib-2.0 -isystem /usr/lib/glib-2.0/include -isystem /usr/include/sysprof-6 -isystem /usr/include/freetype2 -isystem /usr/include/libpng16 -O3 -DNDEBUG -std=gnu++20 -Wall -Wextra -Wno-missing-field-initializers -DHWY_SHARED_DEFINE -DAVIF_DLL -DEB_DLL -DRTC_BUILD=0 -D_GNU_SOURCE=1 -D_REENTRANT -pthread -DWITH_GZFILEOP -o CMakeFiles/ordis.dir/src/game.cpp.o -c /home/connor/Ordis/src/game.cpp",
+  "file": "/home/connor/Ordis/src/game.cpp",
+  "output": "/home/connor/Ordis/build/CMakeFiles/ordis.dir/src/game.cpp.o"
+},
+{
+  "directory": "/home/connor/Ordis/build",
+  "command": "/usr/bin/c++ -DGLM_ENABLE_EXPERIMENTAL -DGLM_FORCE_DEPTH_ZERO_TO_ONE -isystem /usr/include/SDL2 -isystem /usr/include/rav1e -isystem /usr/include/svt-av1 -isystem /usr/include/webp -isystem /usr/include/harfbuzz -isystem /usr/include/glib-2.0 -isystem /usr/lib/glib-2.0/include -isystem /usr/include/sysprof-6 -isystem /usr/include/freetype2 -isystem /usr/include/libpng16 -O3 -DNDEBUG -std=gnu++20 -Wall -Wextra -Wno-missing-field-initializers -DHWY_SHARED_DEFINE -DAVIF_DLL -DEB_DLL -DRTC_BUILD=0 -D_GNU_SOURCE=1 -D_REENTRANT -pthread -DWITH_GZFILEOP -o CMakeFiles/ordis.dir/src/items.cpp.o -c /home/connor/Ordis/src/items.cpp",
+  "file": "/home/connor/Ordis/src/items.cpp",
+  "output": "/home/connor/Ordis/build/CMakeFiles/ordis.dir/src/items.cpp.o"
+},
+{
+  "directory": "/home/connor/Ordis/build",
+  "command": "/usr/bin/c++ -DGLM_ENABLE_EXPERIMENTAL -DGLM_FORCE_DEPTH_ZERO_TO_ONE -isystem /usr/include/SDL2 -isystem /usr/include/rav1e -isystem /usr/include/svt-av1 -isystem /usr/include/webp -isystem /usr/include/harfbuzz -isystem /usr/include/glib-2.0 -isystem /usr/lib/glib-2.0/include -isystem /usr/include/sysprof-6 -isystem /usr/include/freetype2 -isystem /usr/include/libpng16 -O3 -DNDEBUG -std=gnu++20 -Wall -Wextra -Wno-missing-field-initializers -DHWY_SHARED_DEFINE -DAVIF_DLL -DEB_DLL -DRTC_BUILD=0 -D_GNU_SOURCE=1 -D_REENTRANT -pthread -DWITH_GZFILEOP -o CMakeFiles/ordis.dir/src/main.cpp.o -c /home/connor/Ordis/src/main.cpp",
+  "file": "/home/connor/Ordis/src/main.cpp",
+  "output": "/home/connor/Ordis/build/CMakeFiles/ordis.dir/src/main.cpp.o"
+},
+{
+  "directory": "/home/connor/Ordis/build",
+  "command": "/usr/bin/c++ -DGLM_ENABLE_EXPERIMENTAL -DGLM_FORCE_DEPTH_ZERO_TO_ONE -isystem /usr/include/SDL2 -isystem /usr/include/rav1e -isystem /usr/include/svt-av1 -isystem /usr/include/webp -isystem /usr/include/harfbuzz -isystem /usr/include/glib-2.0 -isystem /usr/lib/glib-2.0/include -isystem /usr/include/sysprof-6 -isystem /usr/include/freetype2 -isystem /usr/include/libpng16 -O3 -DNDEBUG -std=gnu++20 -Wall -Wextra -Wno-missing-field-initializers -DHWY_SHARED_DEFINE -DAVIF_DLL -DEB_DLL -DRTC_BUILD=0 -D_GNU_SOURCE=1 -D_REENTRANT -pthread -DWITH_GZFILEOP -o CMakeFiles/ordis.dir/src/player.cpp.o -c /home/connor/Ordis/src/player.cpp",
+  "file": "/home/connor/Ordis/src/player.cpp",
+  "output": "/home/connor/Ordis/build/CMakeFiles/ordis.dir/src/player.cpp.o"
+},
+{
+  "directory": "/home/connor/Ordis/build",
+  "command": "/usr/bin/c++ -DGLM_ENABLE_EXPERIMENTAL -DGLM_FORCE_DEPTH_ZERO_TO_ONE -isystem /usr/include/SDL2 -isystem /usr/include/rav1e -isystem /usr/include/svt-av1 -isystem /usr/include/webp -isystem /usr/include/harfbuzz -isystem /usr/include/glib-2.0 -isystem /usr/lib/glib-2.0/include -isystem /usr/include/sysprof-6 -isystem /usr/include/freetype2 -isystem /usr/include/libpng16 -O3 -DNDEBUG -std=gnu++20 -Wall -Wextra -Wno-missing-field-initializers -DHWY_SHARED_DEFINE -DAVIF_DLL -DEB_DLL -DRTC_BUILD=0 -D_GNU_SOURCE=1 -D_REENTRANT -pthread -DWITH_GZFILEOP -o CMakeFiles/ordis.dir/src/renderer.cpp.o -c /home/connor/Ordis/src/renderer.cpp",
+  "file": "/home/connor/Ordis/src/renderer.cpp",
+  "output": "/home/connor/Ordis/build/CMakeFiles/ordis.dir/src/renderer.cpp.o"
+},
+{
+  "directory": "/home/connor/Ordis/build",
+  "command": "/usr/bin/c++ -DGLM_ENABLE_EXPERIMENTAL -DGLM_FORCE_DEPTH_ZERO_TO_ONE -isystem /usr/include/SDL2 -isystem /usr/include/rav1e -isystem /usr/include/svt-av1 -isystem /usr/include/webp -isystem /usr/include/harfbuzz -isystem /usr/include/glib-2.0 -isystem /usr/lib/glib-2.0/include -isystem /usr/include/sysprof-6 -isystem /usr/include/freetype2 -isystem /usr/include/libpng16 -O3 -DNDEBUG -std=gnu++20 -Wall -Wextra -Wno-missing-field-initializers -DHWY_SHARED_DEFINE -DAVIF_DLL -DEB_DLL -DRTC_BUILD=0 -D_GNU_SOURCE=1 -D_REENTRANT -pthread -DWITH_GZFILEOP -o CMakeFiles/ordis.dir/src/ui.cpp.o -c /home/connor/Ordis/src/ui.cpp",
+  "file": "/home/connor/Ordis/src/ui.cpp",
+  "output": "/home/connor/Ordis/build/CMakeFiles/ordis.dir/src/ui.cpp.o"
+},
+{
+  "directory": "/home/connor/Ordis/build",
+  "command": "/usr/bin/c++ -DGLM_ENABLE_EXPERIMENTAL -DGLM_FORCE_DEPTH_ZERO_TO_ONE -isystem /usr/include/SDL2 -isystem /usr/include/rav1e -isystem /usr/include/svt-av1 -isystem /usr/include/webp -isystem /usr/include/harfbuzz -isystem /usr/include/glib-2.0 -isystem /usr/lib/glib-2.0/include -isystem /usr/include/sysprof-6 -isystem /usr/include/freetype2 -isystem /usr/include/libpng16 -O3 -DNDEBUG -std=gnu++20 -Wall -Wextra -Wno-missing-field-initializers -DHWY_SHARED_DEFINE -DAVIF_DLL -DEB_DLL -DRTC_BUILD=0 -D_GNU_SOURCE=1 -D_REENTRANT -pthread -DWITH_GZFILEOP -o CMakeFiles/ordis.dir/src/vk_context.cpp.o -c /home/connor/Ordis/src/vk_context.cpp",
+  "file": "/home/connor/Ordis/src/vk_context.cpp",
+  "output": "/home/connor/Ordis/build/CMakeFiles/ordis.dir/src/vk_context.cpp.o"
+},
+{
+  "directory": "/home/connor/Ordis/build",
+  "command": "/usr/bin/c++ -DGLM_ENABLE_EXPERIMENTAL -DGLM_FORCE_DEPTH_ZERO_TO_ONE -isystem /usr/include/SDL2 -isystem /usr/include/rav1e -isystem /usr/include/svt-av1 -isystem /usr/include/webp -isystem /usr/include/harfbuzz -isystem /usr/include/glib-2.0 -isystem /usr/lib/glib-2.0/include -isystem /usr/include/sysprof-6 -isystem /usr/include/freetype2 -isystem /usr/include/libpng16 -O3 -DNDEBUG -std=gnu++20 -Wall -Wextra -Wno-missing-field-initializers -DHWY_SHARED_DEFINE -DAVIF_DLL -DEB_DLL -DRTC_BUILD=0 -D_GNU_SOURCE=1 -D_REENTRANT -pthread -DWITH_GZFILEOP -o CMakeFiles/ordis.dir/src/world.cpp.o -c /home/connor/Ordis/src/world.cpp",
+  "file": "/home/connor/Ordis/src/world.cpp",
+  "output": "/home/connor/Ordis/build/CMakeFiles/ordis.dir/src/world.cpp.o"
+}
+]

@@ -1,0 +1,4 @@
+/home/connor/Ordis/build/CMakeFiles/shaders.dir
+/home/connor/Ordis/build/CMakeFiles/ordis.dir
+/home/connor/Ordis/build/CMakeFiles/edit_cache.dir
+/home/connor/Ordis/build/CMakeFiles/rebuild_cache.dir

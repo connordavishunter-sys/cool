@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(file assets/textures/blocks/*)",
+      "Bash(file assets/textures/ui/*)"
+    ]
+  }
+}
