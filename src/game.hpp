@@ -1,5 +1,6 @@
 #pragma once
 #include "items.hpp"
+#include "particles.hpp"
 #include "player.hpp"
 #include "renderer.hpp"
 #include "ui.hpp"
@@ -23,6 +24,9 @@ struct Options {
     float music = 0.5f;
     bool vsync = true;
     float brightness = 0.5f;
+    int aa = AaOff;
+    bool frameGen = false;
+    RtSettings rt;
 };
 
 enum GameMode { Creative, Survival };
@@ -52,7 +56,7 @@ public:
     void run();
 
 private:
-    enum class Screen { Title, Worlds, CreateWorld, ConfirmDelete, Options, Loading, Playing, Paused, Inventory, Dead };
+    enum class Screen { Title, Worlds, CreateWorld, ConfirmDelete, Options, RayTracing, Loading, Playing, Paused, Inventory, Dead };
 
     std::filesystem::path base, savesDir;
     SDL_Window* window = nullptr;
@@ -79,6 +83,7 @@ private:
     std::unique_ptr<World> world;
     WorldMeta meta;
     Player player;
+    Particles particles;
     bool showDebug = false;
     double lastSpace = -1, breakTimer = 0, placeTimer = 0, autosaveTimer = 0, loadingStart = 0, slotChangedAt = -10;
     bool worldEdited = false;
@@ -86,7 +91,7 @@ private:
 
     // Survival
     glm::ivec3 breakTarget{0};
-    double breakProgress = 0, fallStart = 0, lavaTimer = 0, regenTimer = 0, hurtAt = -10;
+    double breakProgress = 0, chipTimer = 0, fallStart = 0, lavaTimer = 0, regenTimer = 0, hurtAt = -10;
     ItemStack held;  // stack carried by the mouse in the inventory
     float craftScroll = 0;
 
@@ -123,6 +128,7 @@ private:
     void drawCreateWorld();
     void drawConfirmDelete();
     void drawOptions();
+    void drawRayTracing();
     void drawLoading();
     void drawHud();
     void drawPause();

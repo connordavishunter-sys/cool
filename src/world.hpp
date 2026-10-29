@@ -39,7 +39,7 @@ struct Chunk {
 
 struct Vertex {
     float x, y, z;
-    uint32_t packed;  // normal:3 layer:8 unused:2 ao:2 emissive:1 kind:2 u:5 v:5 (uv in 16ths)
+    uint32_t packed;  // normal:3 layer:8 wave:1 unused:1 ao:2 emissive:1 kind:2 u:5 v:5 (uv in 16ths)
     uint32_t light;   // sky, r, g, b as unorm8
 };
 

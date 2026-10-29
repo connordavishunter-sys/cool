@@ -17,6 +17,10 @@ cmake -S . -B build -G Ninja && cmake --build build
 
 Saves go to `build/saves/<world>/`, options to `build/options.txt`.
 
+DLSS is optional. When NVIDIA's [DLSS SDK](https://github.com/NVIDIA/DLSS) is in `third_party/DLSS` (only `include/`,
+`lib/Linux_x86_64/libnvsdk_ngx.a` and `lib/Linux_x86_64/rel/libnvidia-ngx-dlss*.so.*` are needed), CMake builds it in and copies the
+DLSS libraries (upscaling and frame generation) next to the binary; without it the DLSS options are hidden. The SDK is under NVIDIA's license (`third_party/DLSS/LICENSE.txt`).
+
 ## Controls
 
 | Key | Action |
@@ -85,15 +89,58 @@ full block next to them. Flowers can only be planted on grass or dirt.
 - **Ray Traced**: `VK_KHR_ray_query` shadow rays toward the sun/moon and the nearest block lights, plus ray traced water reflections.
 - **Path Traced**: two-bounce path tracing with next-event estimation and temporally reprojected accumulation.
 
+Overlapping coloured lights add up, so a red and a blue light make purple where they meet. In Classic each light colour
+floods separately and the colours are summed in linear light; the ray traced modes add the lights directly, with a
+gentle falloff so neighbouring lights overlap.
+
 In both ray traced modes, leaves and glass are alpha tested, so they cast shadows only where their texture is opaque.
-Stained glass tints the light that passes through it, so it casts coloured shadows.
+Stained glass tints every ray that passes through it (shadow, bounce and reflection rays), so it casts coloured shadows
+and tints what is seen through reflections. In Classic it tints block light, but not daylight, which has only a single
+brightness channel.
 
 Both ray traced modes need a GPU with ray query support; otherwise Classic is used. Lower **Render Scale** in Options for more speed.
+
+**Options → Ray Tracing Settings...** tunes both modes: how many block lights get shadow rays, sun shadow softness, sky
+ambient and water reflections for Ray Traced; bounces, samples per pixel, accumulation length and sun softness for Path
+Traced; and block light strength for both. Changing a setting restarts path traced accumulation.
+
+## Anti-aliasing (Options → Anti-aliasing)
+
+- **FXAA**: post-process edge smoothing, the cheapest option.
+- **TAA**: jitters the camera by a sub-pixel offset each frame and blends the frames using motion vectors reprojected from the
+  depth buffer, clamping history to the current pixel's neighbourhood so moving edges don't ghost.
+- **DLAA / DLSS Quality / Balanced / Performance / Ultra Performance**: NVIDIA DLSS Super Resolution on RTX GPUs, fed the same
+  jitter and motion vectors. DLSS picks the render resolution (100%, 67%, 58%, 50%, 33%), so Render Scale is ignored. In Path
+  Traced mode DLSS takes the raw frames and replaces the accumulation pass.
+
+The F3 overlay shows the anti-aliasing mode and the render and output resolutions.
+
+## Frame generation (Options → Frame Generation)
+
+DLSS Frame Generation (RTX 40 series and newer) inserts an interpolated frame between every two rendered frames, using the
+depth and motion vectors from the world pass. The UI is drawn over a HUD-less copy of the scene, so it never warps. A pacer
+thread presents the generated frame as soon as the GPU finishes and the real one half a frame later. It works with any
+anti-aliasing mode; the F3 overlay shows both the rendered and the presented frame rate. Generating a frame costs about 3 ms
+on an RTX 4070 Laptop GPU at 1128x744, so it helps most in heavy scenes like Path Traced.
+
+## Particles
+
+Mining and breaking blocks throws off small chips of the block's texture that fall and land on the terrain. They're drawn
+through the world pipeline, so every lighting mode lights them.
+
+## Water and lava
+
+The surfaces of water and lava roll with gentle waves. The mesher flags the top vertices of each liquid surface, and the
+vertex shader lowers them along a few sine waves in world space; lava moves slower and heavier. The fragment shader tilts
+the normal to match, so reflections and Fresnel ripple in the ray traced modes. Flat-lit water in Classic gets slope shading,
+and lava darkens in its troughs.
 
 ## Layout
 
 - `src/world.*`: chunks, terrain generation, threaded lighting/meshing, chunk streaming and RLE save files
 - `src/renderer.*`, `src/vk_context.*`: Vulkan setup, chunk meshes, BLAS/TLAS management, frame graph
+- `src/dlss.*`: DLSS upscaling and frame generation through NVIDIA NGX (stubs when built without the SDK)
+- `src/particles.*`: block breaking particles
 - `src/blocks.*`: block table, shapes (half-block cell masks), pane connections and collision boxes
 - `src/items.*`: inventory, item stacks and crafting recipes
 - `src/ui.*`, `src/game.*`: immediate-mode UI, screens, survival rules, saves and options

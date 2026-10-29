@@ -5,6 +5,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -20,12 +21,22 @@ struct FrameUBO {
     glm::mat4 viewProj, invViewProj;
     glm::vec4 sunDir, sunColor, skyZenith, skyHorizon, fog;
     glm::uvec4 info;
+    glm::vec4 rt;
+    glm::uvec4 rtCount;
+    glm::vec4 camWrap;
 };
 struct LightGpu { glm::vec4 pos, color; };
-struct AccumPC { glm::mat4 invViewProj, prevViewProj; glm::vec4 camDelta; };
+struct AccumPC { glm::mat4 invViewProj, prevViewProj; glm::vec4 camDelta, params; };
+struct TemporalPC { glm::mat4 reproject; glm::vec4 jitter; };
 struct PostPC { glm::mat4 invViewProj; glm::vec4 selection, selSize, params, grade; };
 
 VkDeviceSize alignUp(VkDeviceSize v, VkDeviceSize a) { return (v + a - 1) / a * a; }
+
+float halton(uint32_t i, uint32_t base) {
+    float f = 1, r = 0;
+    for (; i; i /= base) r += (f /= base) * (i % base);
+    return r;
+}
 
 std::vector<uint8_t> loadRGBA(const std::string& path, int& w, int& h) {
     SDL_Surface* s = IMG_Load(path.c_str());
@@ -90,7 +101,8 @@ struct GraphicsDesc {
     VkPipelineLayout layout;
     const VkPipelineVertexInputStateCreateInfo* vertexInput;
     VkFormat color, depth = VK_FORMAT_UNDEFINED;
-    bool depthTest = false, depthWrite = false, blend = false;
+    bool depthTest = false, depthWrite = false, blend = false, colorWrite = true;
+    VkCompareOp compare = VK_COMPARE_OP_GREATER_OR_EQUAL;  // reverse-Z
     VkCullModeFlags cull = VK_CULL_MODE_NONE;
     const VkSpecializationInfo* spec = nullptr;
 };
@@ -121,9 +133,9 @@ VkPipeline makeGraphics(VkDevice dev, const GraphicsDesc& d) {
     VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     ds.depthTestEnable = d.depthTest;
     ds.depthWriteEnable = d.depthWrite;
-    ds.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;  // reverse-Z
+    ds.depthCompareOp = d.compare;
     VkPipelineColorBlendAttachmentState att{};
-    att.colorWriteMask = 0xF;
+    att.colorWriteMask = d.colorWrite ? 0xF : 0;
     if (d.blend) {
         att.blendEnable = VK_TRUE;
         att.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
@@ -220,6 +232,7 @@ void Renderer::init(VkCtx& c, const std::string& baseDir, const Font& font) {
         f.chunkTable = c.createBuffer(MAX_INSTANCES * 24, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, HOST);
         f.staging = c.createBuffer(STAGING_SIZE, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
         f.uiVerts = c.createBuffer(UI_VERTS * sizeof(UiVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, HOST);
+        f.particles = c.createBuffer(MAX_PARTICLE_QUADS * 4 * sizeof(Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, HOST);
         if (!rt) continue;
 
         const VkBufferUsageFlags asUsage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
@@ -247,6 +260,25 @@ void Renderer::init(VkCtx& c, const std::string& baseDir, const Font& font) {
         VK_CHECK(c.vkCreateAccelerationStructureKHR(dev, &aci, nullptr, &f.tlas));
     }
 
+    VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pci.queueFamilyIndex = c.queueFamily;
+    VK_CHECK(vkCreateCommandPool(dev, &pci, nullptr, &pacerPool));
+    cai.commandPool = pacerPool;
+    cai.commandBufferCount = 2;
+    for (FgSlot& s : fg) {
+        VK_CHECK(vkAllocateCommandBuffers(dev, &cai, s.copy));
+        for (int i = 0; i < 2; ++i) {
+            VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+            fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+            VK_CHECK(vkCreateFence(dev, &fci, nullptr, &s.copyDone[i]));
+            VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            VK_CHECK(vkCreateSemaphore(dev, &sci, nullptr, &s.acquired[i]));
+        }
+    }
+    pacer = std::thread([this] { pacerLoop(); });
+
+    dlss.init(c, base);
     createDescriptors();
     createPipelines();
     recreateSwapchain();
@@ -324,7 +356,8 @@ void Renderer::createDescriptors() {
     worldSetLayout = makeSetLayout(dev, world);
     accumSetLayout = makeSetLayout(dev, {{STORAGE_IMG, COMP}, {SAMPLER, COMP}, {STORAGE_IMG, COMP}, {STORAGE_IMG, COMP},
                                          {STORAGE_IMG, COMP}, {STORAGE_IMG, COMP}});
-    postSetLayout = makeSetLayout(dev, {{SAMPLER, FRAG}, {SAMPLER, FRAG}, {SAMPLER, FRAG}});
+    postSetLayout = makeSetLayout(dev, {{SAMPLER, FRAG}, {SAMPLER, FRAG}, {SAMPLER, FRAG}, {SAMPLER, FRAG}, {SAMPLER, FRAG}});
+    temporalSetLayout = makeSetLayout(dev, {{SAMPLER, COMP}, {SAMPLER, COMP}, {SAMPLER, COMP}, {STORAGE_IMG, COMP}, {SAMPLER, COMP}, {STORAGE_IMG, COMP}});
     uiSetLayout = makeSetLayout(dev, {{SAMPLER, FRAG}, {SAMPLER, FRAG}});
 
     std::vector<VkDescriptorPoolSize> sizes = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8}, {SAMPLER, 64}, {STORAGE_IMG, 32},
@@ -376,6 +409,7 @@ void Renderer::createDescriptors() {
     for (int p = 0; p < 2; ++p) {
         accumSets[p] = alloc(accumSetLayout);
         postSets[p] = alloc(postSetLayout);
+        temporalSets[p] = alloc(temporalSetLayout);
     }
     for (int t = 0; t < UiTexCount; ++t) {
         uiSets[t] = alloc(uiSetLayout);
@@ -395,14 +429,17 @@ void Renderer::createDescriptors() {
 void Renderer::createPipelines() {
     const std::string dir = base + "shaders/";
     auto load = [&](const char* n) { return ctx->loadShader(dir + n); };
-    VkShaderModule worldVs = load("world.vert.spv"), worldFs = load(ctx->rtSupported ? "world_rt.frag.spv" : "world.frag.spv");
+    VkShaderModule worldVs = load("world.vert.spv"), worldFs = load(ctx->rtSupported ? "world_rt.frag.spv" : "world.frag.spv"),
+                   depthFs = load("depth.frag.spv");
     VkShaderModule skyVs = load("sky.vert.spv"), skyFs = load("sky.frag.spv");
     VkShaderModule fullVs = load("fullscreen.vert.spv"), postFs = load("post.frag.spv"), accumCs = load("accum.comp.spv");
+    VkShaderModule motionCs = load("motion.comp.spv"), taaCs = load("taa.comp.spv");
     VkShaderModule uiVs = load("ui.vert.spv"), uiFs = load("ui.frag.spv");
 
     worldLayout = makeLayout(dev, worldSetLayout, 16, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
     accumLayout = makeLayout(dev, accumSetLayout, sizeof(AccumPC), VK_SHADER_STAGE_COMPUTE_BIT);
     postLayout = makeLayout(dev, postSetLayout, sizeof(PostPC), VK_SHADER_STAGE_FRAGMENT_BIT);
+    temporalLayout = makeLayout(dev, temporalSetLayout, sizeof(TemporalPC), VK_SHADER_STAGE_COMPUTE_BIT);
     uiLayout = makeLayout(dev, uiSetLayout, 8, VK_SHADER_STAGE_VERTEX_BIT);
 
     const VkFormat HDR = VK_FORMAT_R16G16B16A16_SFLOAT, DEPTH = VK_FORMAT_D32_SFLOAT;
@@ -422,11 +459,21 @@ void Renderer::createPipelines() {
         GraphicsDesc d{worldVs, worldFs, worldLayout, &worldInput, HDR, DEPTH};
         d.depthTest = true;
         bool blended = kind == KindWater || kind == KindTranslucent;
-        d.depthWrite = !blended;
         d.blend = blended;
         d.cull = blended ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
         d.spec = &spec;
+        d.depthWrite = !blended;
         worldPipes[kind] = makeGraphics(dev, d);
+        if (!blended) {
+            // Ray traced modes lay down opaque and cutout depth first, so the expensive shading runs once per pixel.
+            GraphicsDesc p = d;
+            p.fs = depthFs;
+            p.colorWrite = false;
+            depthPipes[kind] = makeGraphics(dev, p);
+            d.depthWrite = false;
+            d.compare = VK_COMPARE_OP_EQUAL;
+            equalPipes[kind] = makeGraphics(dev, d);
+        }
     }
     postPipe = makeGraphics(dev, {fullVs, postFs, postLayout, nullptr, ctx->swapFormat});
 
@@ -442,21 +489,33 @@ void Renderer::createPipelines() {
     ud.blend = true;
     uiPipe = makeGraphics(dev, ud);
 
-    VkComputePipelineCreateInfo cci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    cci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    cci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    cci.stage.module = accumCs;
-    cci.stage.pName = "main";
-    cci.layout = accumLayout;
-    VK_CHECK(vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cci, nullptr, &accumPipe));
+    auto compute = [&](VkShaderModule cs, VkPipelineLayout layout) {
+        VkComputePipelineCreateInfo cci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        cci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        cci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cci.stage.module = cs;
+        cci.stage.pName = "main";
+        cci.layout = layout;
+        VkPipeline p;
+        VK_CHECK(vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cci, nullptr, &p));
+        return p;
+    };
+    accumPipe = compute(accumCs, accumLayout);
+    motionPipe = compute(motionCs, temporalLayout);
+    taaPipe = compute(taaCs, temporalLayout);
 
-    for (auto m : {worldVs, worldFs, skyVs, skyFs, fullVs, postFs, accumCs, uiVs, uiFs}) vkDestroyShaderModule(dev, m, nullptr);
+    for (auto m : {worldVs, worldFs, depthFs, skyVs, skyFs, fullVs, postFs, accumCs, motionCs, taaCs, uiVs, uiFs}) vkDestroyShaderModule(dev, m, nullptr);
 }
 
 void Renderer::createTargets() {
     currentScale = std::clamp(currentScale, 0.25f, 1.0f);
     renderW = std::max(1u, (uint32_t)(ctx->swapExtent.width * currentScale));
     renderH = std::max(1u, (uint32_t)(ctx->swapExtent.height * currentScale));
+    if (currentDlss >= 0) {  // DLSS picks the render resolution for its quality mode
+        VkExtent2D r = dlss.renderSize(currentDlss - AaDlaa, ctx->swapExtent);
+        renderW = r.width;
+        renderH = r.height;
+    }
     hdr = ctx->createImage(renderW, renderH, VK_FORMAT_R16G16B16A16_SFLOAT,
                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     depth = ctx->createImage(renderW, renderH, VK_FORMAT_D32_SFLOAT,
@@ -465,16 +524,61 @@ void Renderer::createTargets() {
         hist[i] = ctx->createImage(renderW, renderH, VK_FORMAT_R32G32B32A32_SFLOAT,
                                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
         dist[i] = ctx->createImage(renderW, renderH, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+        taa[i] = ctx->createImage(renderW, renderH, VK_FORMAT_R16G16B16A16_SFLOAT,
+                                  VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    }
+    motion = ctx->createImage(renderW, renderH, VK_FORMAT_R16G16_SFLOAT,
+                              VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    VkExtent2D out = currentDlss >= 0 ? ctx->swapExtent : VkExtent2D{1, 1};
+    upscaled = ctx->createImage(out.width, out.height, VK_FORMAT_R16G16B16A16_SFLOAT,
+                                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    if (currentFg) {
+        // NGX reads and writes the UNORM images; the post and UI pipelines render to sRGB views of the same memory.
+        const VkFormat srgb = ctx->swapFormat;
+        const VkFormat unorm = srgb == VK_FORMAT_B8G8R8A8_SRGB ? VK_FORMAT_B8G8R8A8_UNORM : srgb == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_R8G8B8A8_UNORM : srgb;
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(ctx->gpu, unorm, &fp);
+        VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        const VkImageCreateFlags flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+        auto srgbView = [&](const Image& img) {
+            VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            vci.image = img.image;
+            vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            vci.format = srgb;
+            vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            VkImageView v;
+            VK_CHECK(vkCreateImageView(dev, &vci, nullptr, &v));
+            return v;
+        };
+        const VkExtent2D e = ctx->swapExtent;
+        for (FgSlot& s : fg) {
+            s.hudless = ctx->createImage(e.width, e.height, unorm, usage, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT, false, flags);
+            s.color = ctx->createImage(e.width, e.height, unorm, usage, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT, false, flags);
+            s.interp = ctx->createImage(e.width, e.height, unorm, usage, 1, 1, VK_IMAGE_ASPECT_COLOR_BIT, false, flags);
+            s.hudlessSrgb = srgbView(s.hudless);
+            s.colorSrgb = srgbView(s.color);
+        }
     }
     ctx->submitNow([&](VkCommandBuffer cmd) {
         VkClearColorValue zero{};
         VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        for (Image* img : {&hist[0], &hist[1], &dist[0], &dist[1]}) {
+        for (Image* img : {&hist[0], &hist[1], &dist[0], &dist[1], &taa[0], &taa[1], &motion, &upscaled}) {
             imageBarrier(cmd, img->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
             vkCmdClearColorImage(cmd, img->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
         }
         imageBarrier(cmd, hdr.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
         imageBarrier(cmd, depth.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
+        if (currentDlss >= 0) dlss.create(cmd, currentDlss - AaDlaa, {renderW, renderH}, ctx->swapExtent);
+        if (currentFg) {
+            for (FgSlot& s : fg)
+                for (Image* img : {&s.hudless, &s.color, &s.interp}) {
+                    imageBarrier(cmd, img->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+                    vkCmdClearColorImage(cmd, img->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
+                }
+            dlss.createFg(cmd, ctx->swapExtent, {renderW, renderH}, fg[0].interp.format);
+        }
     });
     historyValid = false;
     writeTargetDescriptors();
@@ -489,9 +593,14 @@ void Renderer::writeTargetDescriptors() {
         VkDescriptorImageInfo a[6] = {{VK_NULL_HANDLE, hdr.view, GENERAL},          {nearestClamp, depth.view, DEPTH_RO},
                                       {VK_NULL_HANDLE, hist[1 - p].view, GENERAL}, {VK_NULL_HANDLE, dist[1 - p].view, GENERAL},
                                       {VK_NULL_HANDLE, hist[p].view, GENERAL},     {VK_NULL_HANDLE, dist[p].view, GENERAL}};
-        VkDescriptorImageInfo q[3] = {{linearClamp, hdr.view, GENERAL}, {histSampler, hist[p].view, GENERAL}, {nearestClamp, depth.view, DEPTH_RO}};
-        VkWriteDescriptorSet w[9] = {};
-        for (int i = 0; i < 9; ++i) {
+        VkDescriptorImageInfo q[5] = {{linearClamp, hdr.view, GENERAL},       {histSampler, hist[p].view, GENERAL},
+                                      {nearestClamp, depth.view, DEPTH_RO},    {linearClamp, taa[p].view, GENERAL},
+                                      {linearClamp, upscaled.view, GENERAL}};
+        VkDescriptorImageInfo t[6] = {{nearestClamp, depth.view, DEPTH_RO},    {nearestClamp, hdr.view, GENERAL},
+                                      {nearestClamp, hist[p].view, GENERAL},   {VK_NULL_HANDLE, motion.view, GENERAL},
+                                      {linearClamp, taa[1 - p].view, GENERAL}, {VK_NULL_HANDLE, taa[p].view, GENERAL}};
+        VkWriteDescriptorSet w[17] = {};
+        for (int i = 0; i < 17; ++i) {
             w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w[i].descriptorCount = 1;
             if (i < 6) {
@@ -499,22 +608,38 @@ void Renderer::writeTargetDescriptors() {
                 w[i].dstBinding = i;
                 w[i].descriptorType = i == 1 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
                 w[i].pImageInfo = &a[i];
-            } else {
+            } else if (i < 11) {
                 w[i].dstSet = postSets[p];
                 w[i].dstBinding = i - 6;
                 w[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                 w[i].pImageInfo = &q[i - 6];
+            } else {
+                w[i].dstSet = temporalSets[p];
+                w[i].dstBinding = i - 11;
+                w[i].descriptorType = i == 14 || i == 16 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                w[i].pImageInfo = &t[i - 11];
             }
         }
-        vkUpdateDescriptorSets(dev, 9, w, 0, nullptr);
+        vkUpdateDescriptorSets(dev, 17, w, 0, nullptr);
     }
 }
 
 void Renderer::destroyTargets() {
-    for (Image* img : {&hdr, &depth, &hist[0], &hist[1], &dist[0], &dist[1]}) ctx->destroyImage(*img);
+    waitPacer(-1);
+    dlss.release();
+    dlss.releaseFg();
+    for (FgSlot& s : fg) {
+        for (VkImageView v : {s.hudlessSrgb, s.colorSrgb})
+            if (v) vkDestroyImageView(dev, v, nullptr);
+        s.hudlessSrgb = s.colorSrgb = VK_NULL_HANDLE;
+        for (Image* img : {&s.hudless, &s.color, &s.interp}) ctx->destroyImage(*img);
+    }
+    for (Image* img : {&hdr, &depth, &hist[0], &hist[1], &dist[0], &dist[1], &motion, &taa[0], &taa[1], &upscaled}) ctx->destroyImage(*img);
 }
 
 void Renderer::recreateSwapchain() {
+    waitPacer(-1);
+    fgOutOfDate = false;
     vkDeviceWaitIdle(dev);
     if (ctx->swapchain) ctx->destroySwapchain();
     ctx->createSwapchain();
@@ -553,23 +678,37 @@ void Renderer::clearWorld() {
 }
 
 void Renderer::destroy() {
+    waitPacer(-1);
+    {
+        std::lock_guard l(pacerMutex);
+        pacerStop = true;
+    }
+    pacerCv.notify_all();
+    pacer.join();
     vkDeviceWaitIdle(dev);
     clearWorld();
     destroyTargets();
+    dlss.shutdown();
     for (Frame& f : frames) {
         vkDestroyFence(dev, f.fence, nullptr);
         vkDestroySemaphore(dev, f.acquired, nullptr);
         if (f.tlas) ctx->vkDestroyAccelerationStructureKHR(dev, f.tlas, nullptr);
-        for (Buffer* b : {&f.ubo, &f.lights, &f.chunkTable, &f.instances, &f.staging, &f.uiVerts, &f.tlasBuffer, &f.tlasScratch, &f.blasScratch})
+        for (Buffer* b : {&f.ubo, &f.lights, &f.chunkTable, &f.instances, &f.staging, &f.uiVerts, &f.particles, &f.tlasBuffer, &f.tlasScratch, &f.blasScratch})
             ctx->destroyBuffer(*b);
     }
     for (auto s : renderDone) vkDestroySemaphore(dev, s, nullptr);
+    for (FgSlot& s : fg)
+        for (int i = 0; i < 2; ++i) {
+            vkDestroyFence(dev, s.copyDone[i], nullptr);
+            vkDestroySemaphore(dev, s.acquired[i], nullptr);
+        }
+    vkDestroyCommandPool(dev, pacerPool, nullptr);
     ctx->destroyBuffer(indexBuffer);
     ctx->destroyImage(blockArray);
     for (auto& t : uiTextures) ctx->destroyImage(t);
-    for (auto p : {skyPipe, worldPipes[0], worldPipes[1], worldPipes[2], worldPipes[3], accumPipe, postPipe, uiPipe}) vkDestroyPipeline(dev, p, nullptr);
-    for (auto l : {worldLayout, accumLayout, postLayout, uiLayout}) vkDestroyPipelineLayout(dev, l, nullptr);
-    for (auto l : {worldSetLayout, accumSetLayout, postSetLayout, uiSetLayout}) vkDestroyDescriptorSetLayout(dev, l, nullptr);
+    for (auto p : {skyPipe, worldPipes[0], worldPipes[1], worldPipes[2], worldPipes[3], depthPipes[0], depthPipes[1], equalPipes[0], equalPipes[1], accumPipe, postPipe, uiPipe, motionPipe, taaPipe}) vkDestroyPipeline(dev, p, nullptr);
+    for (auto l : {worldLayout, accumLayout, postLayout, uiLayout, temporalLayout}) vkDestroyPipelineLayout(dev, l, nullptr);
+    for (auto l : {worldSetLayout, accumSetLayout, postSetLayout, uiSetLayout, temporalSetLayout}) vkDestroyDescriptorSetLayout(dev, l, nullptr);
     vkDestroyDescriptorPool(dev, descPool, nullptr);
     for (auto s : {nearestRepeat, nearestClamp, linearClamp}) vkDestroySampler(dev, s, nullptr);
 }
@@ -717,7 +856,18 @@ void Renderer::renderWorld(VkCommandBuffer cmd, Frame& f, const SceneParams& sp)
     proj[1][1] = -fy;
     proj[2][3] = -1;
     proj[3][2] = NEAR_PLANE;
-    glm::mat4 viewProj = proj * view, invViewProj = glm::inverse(viewProj);
+    // TAA and DLSS jitter the image by a sub-pixel offset each frame (Halton 2,3) and resolve it over time.
+    const bool temporal = sp.aa == AaTaa || currentDlss >= 0;
+    glm::vec2 jitter(0);
+    if (temporal) {
+        float upscale = (float)ctx->swapExtent.width / renderW;
+        uint32_t phases = std::max(8u, (uint32_t)std::ceil(8 * upscale * upscale));
+        uint32_t i = (uint32_t)(frameIndex % phases) + 1;
+        jitter = glm::vec2(halton(i, 2), halton(i, 3)) - 0.5f;
+    }
+    glm::mat4 unjittered = proj * view;
+    glm::mat4 viewProj = glm::translate(glm::mat4(1), glm::vec3(2.0f * jitter / glm::vec2(renderW, renderH), 0)) * unjittered;
+    glm::mat4 invViewProj = glm::inverse(viewProj);
 
     const int ccx = (int)std::floor(sp.camPos.x / CW), ccz = (int)std::floor(sp.camPos.z / CW);
     const int rd = sp.renderDist;
@@ -794,7 +944,7 @@ void Renderer::renderWorld(VkCommandBuffer cmd, Frame& f, const SceneParams& sp)
             for (auto& l : c->lights) {
                 glm::vec3 p = o + glm::vec3(l.x + 0.5f, l.y + 0.5f, l.z + 0.5f);
                 const auto& e = blockInfo((uint8_t)l.w).emit;
-                lights.push_back({glm::dot(p, p), {glm::vec4(p, 1), glm::vec4(glm::vec3(e[0], e[1], e[2]) / 15.0f * LIGHT_INTENSITY, 0)}});
+                lights.push_back({glm::dot(p, p), {glm::vec4(p, 1), glm::vec4(glm::vec3(e[0], e[1], e[2]) / 15.0f * LIGHT_INTENSITY * sp.rt.lightStrength, 0)}});
             }
         }
         size_t n = std::min<size_t>(lights.size(), MAX_LIGHTS);
@@ -803,6 +953,11 @@ void Renderer::renderWorld(VkCommandBuffer cmd, Frame& f, const SceneParams& sp)
         lightCount = (uint32_t)n;
     }
     u.info = glm::uvec4(mode, (uint32_t)frameIndex, lightCount, 0);
+    const RtSettings& rs = sp.rt;
+    u.rt = glm::vec4((mode == LightPathTraced ? rs.ptSunSoftness : rs.rtSunSoftness) * 0.1f, rs.ambient, 2.5f * rs.lightStrength, rs.reflections);
+    // The camera's world position wrapped to the waves' 256-block period, so float precision holds far from spawn.
+    u.camWrap = glm::vec4(glm::vec3(glm::mod(sp.camPos, glm::dvec3(256.0))), 0);
+    u.rtCount = glm::uvec4(rs.shadowRays, rs.bounces, std::max(rs.samples, 1), 0);
     std::memcpy(f.ubo.mapped, &u, sizeof(u));
 
     // Top-level acceleration structure over every chunk in range.
@@ -871,8 +1026,8 @@ void Renderer::renderWorld(VkCommandBuffer cmd, Frame& f, const SceneParams& sp)
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
-    auto drawPass = [&](int kind, bool backToFront) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, worldPipes[kind]);
+    auto drawPass = [&](VkPipeline pipe, int kind, bool backToFront) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
         for (size_t i = 0; i < visible.size(); ++i) {
             const GpuChunk& c = *visible[backToFront ? visible.size() - 1 - i : i].second;
             uint32_t count = c.quads[kind], first = 0;
@@ -885,10 +1040,27 @@ void Renderer::renderWorld(VkCommandBuffer cmd, Frame& f, const SceneParams& sp)
             vkCmdDrawIndexed(cmd, count * 6, 1, first * 6, 0, 0);
         }
     };
-    drawPass(KindOpaque, false);
-    drawPass(KindCutout, false);
-    drawPass(KindWater, true);
-    drawPass(KindTranslucent, true);
+    if (mode == LightClassic) {
+        drawPass(worldPipes[KindOpaque], KindOpaque, false);
+        drawPass(worldPipes[KindCutout], KindCutout, false);
+    } else {
+        drawPass(depthPipes[KindOpaque], KindOpaque, false);
+        drawPass(depthPipes[KindCutout], KindCutout, false);
+        drawPass(equalPipes[KindOpaque], KindOpaque, false);
+        drawPass(equalPipes[KindCutout], KindCutout, false);
+    }
+    if (sp.particles && !sp.particles->empty()) {
+        uint32_t quads = std::min<uint32_t>((uint32_t)sp.particles->size() / 4, MAX_PARTICLE_QUADS);
+        std::memcpy(f.particles.mapped, sp.particles->data(), quads * 4 * sizeof(Vertex));
+        glm::vec4 zero4(0);
+        VkDeviceSize zero = 0;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, worldPipes[KindCutout]);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &f.particles.buffer, &zero);
+        vkCmdPushConstants(cmd, worldLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16, &zero4);
+        vkCmdDrawIndexed(cmd, quads * 6, 1, 0, 0, 0);
+    }
+    drawPass(worldPipes[KindWater], KindWater, true);
+    drawPass(worldPipes[KindTranslucent], KindTranslucent, true);
     vkCmdEndRendering(cmd);
 
     imageBarrier(cmd, hdr.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
@@ -897,23 +1069,62 @@ void Renderer::renderWorld(VkCommandBuffer cmd, Frame& f, const SceneParams& sp)
 
     // Temporal accumulation for the path tracer.
     const int parity = (int)(frameIndex & 1);
-    if (mode == LightPathTraced) {
+    const glm::dvec3 delta = sp.camPos - prevCam;
+    const bool reset = !historyValid || prevMode != mode || prevAa != sp.aa || prevRt != sp.rt || sp.resetAccumulation || glm::length(delta) > 8.0;
+    if (mode == LightPathTraced && currentDlss < 0) {  // DLSS denoises the raw frames itself
         AccumPC pc;
         pc.invViewProj = invViewProj;
         pc.prevViewProj = prevViewProj;
-        glm::dvec3 delta = sp.camPos - prevCam;
-        bool reset = !historyValid || prevMode != mode || sp.resetAccumulation || glm::length(delta) > 8.0;
         pc.camDelta = glm::vec4(glm::vec3(delta), reset ? 1.0f : 0.0f);
+        pc.params = glm::vec4((float)sp.rt.history, 0, 0, 0);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, accumPipe);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, accumLayout, 0, 1, &accumSets[parity], 0, nullptr);
         vkCmdPushConstants(cmd, accumLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
         vkCmdDispatch(cmd, (renderW + 7) / 8, (renderH + 7) / 8, 1);
         memoryBarrier(cmd);
-        historyValid = true;
     }
-    prevViewProj = viewProj;
+
+    // Frame generation's view of the camera, in render space.
+    glm::mat4 clipToPrev = prevViewProj * glm::translate(glm::mat4(1), glm::vec3(delta)) * glm::inverse(unjittered);
+    glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0, 1, 0)));
+    fgCam = {proj, clipToPrev, glm::vec3(0), glm::cross(right, fwd), right, fwd, NEAR_PLANE, 10000.0f, glm::radians(sp.fov),
+             (float)renderW / renderH};
+    fgJitter = jitter;
+    fgReset = reset || !fgWasActive;
+
+    // Motion vectors, then the TAA resolve or DLSS.
+    if (temporal || fgActive) {
+        TemporalPC tp;
+        tp.reproject = prevViewProj * glm::translate(glm::mat4(1), glm::vec3(delta)) * invViewProj;
+        tp.jitter = glm::vec4(jitter, mode == LightPathTraced ? 1 : 0, reset ? 1 : 0);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, temporalLayout, 0, 1, &temporalSets[parity], 0, nullptr);
+        vkCmdPushConstants(cmd, temporalLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(tp), &tp);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, motionPipe);
+        vkCmdDispatch(cmd, (renderW + 7) / 8, (renderH + 7) / 8, 1);
+        memoryBarrier(cmd);
+        if (sp.aa == AaTaa && currentDlss < 0) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, taaPipe);
+            vkCmdDispatch(cmd, (renderW + 7) / 8, (renderH + 7) / 8, 1);
+            memoryBarrier(cmd);
+        } else if (currentDlss >= 0) {
+            const auto GENERAL = VK_IMAGE_LAYOUT_GENERAL, READ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       DEPTH_RO = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            imageBarrier(cmd, hdr.image, GENERAL, READ);
+            imageBarrier(cmd, motion.image, GENERAL, READ);
+            imageBarrier(cmd, depth.image, DEPTH_RO, READ, VK_IMAGE_ASPECT_DEPTH_BIT);
+            dlss.evaluate(cmd, hdr, depth, motion, upscaled, jitter, reset);
+            imageBarrier(cmd, hdr.image, READ, GENERAL);
+            imageBarrier(cmd, motion.image, READ, GENERAL);
+            imageBarrier(cmd, depth.image, READ, DEPTH_RO, VK_IMAGE_ASPECT_DEPTH_BIT);
+            memoryBarrier(cmd);
+        }
+    }
+    historyValid = true;
+    prevViewProj = unjittered;
     prevCam = sp.camPos;
     prevMode = mode;
+    prevAa = sp.aa;
+    prevRt = sp.rt;
 }
 
 void Renderer::renderUi(VkCommandBuffer cmd, Frame& f, const UiBatch& ui) {
@@ -932,30 +1143,150 @@ void Renderer::renderUi(VkCommandBuffer cmd, Frame& f, const UiBatch& ui) {
     }
 }
 
+void Renderer::drawPost(VkCommandBuffer cmd, const SceneParams& sp) {
+    const bool pt = ctx->rtSupported && sp.mode == LightPathTraced;
+    const bool filmic = ctx->rtSupported && sp.mode != LightClassic;
+    glm::vec3 fwd(std::sin(sp.yaw) * std::cos(sp.pitch), std::sin(sp.pitch), -std::cos(sp.yaw) * std::cos(sp.pitch));
+    float fy = 1.0f / std::tan(glm::radians(sp.fov) * 0.5f);
+    glm::mat4 proj(0.0f);
+    proj[0][0] = fy / ((float)renderW / renderH);
+    proj[1][1] = -fy;
+    proj[2][3] = -1;
+    proj[3][2] = NEAR_PLANE;
+    PostPC pc;
+    pc.invViewProj = glm::inverse(proj * glm::lookAt(glm::vec3(0), fwd, glm::vec3(0, 1, 0)));
+    pc.selection = glm::vec4(glm::vec3(sp.selLo - sp.camPos), sp.hasSelection ? 1.0f : 0.0f);
+    pc.selSize = glm::vec4(glm::vec3(sp.selHi - sp.selLo), 0);
+    float angle = sp.timeOfDay * 6.2831853f;
+    float day = glm::clamp(std::sin(angle) * 3.0f + 0.3f, 0.0f, 1.0f);
+    float source = currentDlss >= 0 ? 3 : sp.aa == AaTaa ? 2 : pt ? 1 : 0;
+    pc.params = glm::vec4(source, filmic ? glm::mix(3.0f, 1.0f, day) : 1.0f, filmic ? 1.0f : 0.0f, 2.0f / (fy * ctx->swapExtent.height));
+    // Brightness 0.5 is neutral; it bends the display curve to lift or deepen the darks.
+    pc.grade = glm::vec4(std::exp2((0.5f - sp.brightness) * 1.4f), sp.aa == AaFxaa ? 1 : 0, 0, 0);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, postPipe);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, postLayout, 0, 1, &postSets[frameIndex & 1], 0, nullptr);
+    vkCmdPushConstants(cmd, postLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+}
+
+void Renderer::waitPacer(int slot) {
+    std::unique_lock l(pacerMutex);
+    pacerCv.wait(l, [&] {
+        if (slot < 0) return fgJobs.empty() && pacerSlot < 0;
+        return pacerSlot != slot && std::find(fgJobs.begin(), fgJobs.end(), (uint32_t)slot) == fgJobs.end();
+    });
+}
+
+void Renderer::pacerLoop() {
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point lastDone{};
+    double interval = 0;
+    for (;;) {
+        uint32_t slot;
+        {
+            std::unique_lock l(pacerMutex);
+            pacerCv.wait(l, [&] { return pacerStop || !fgJobs.empty(); });
+            if (pacerStop) return;
+            slot = fgJobs.front();
+            fgJobs.pop_front();
+            pacerSlot = (int)slot;
+        }
+        // Once the frame is rendered, show the interpolated frame at once and the real one half a frame later.
+        vkWaitForFences(dev, 1, &frames[slot].fence, VK_TRUE, UINT64_MAX);
+        Clock::time_point done = Clock::now();
+        double dt = std::chrono::duration<double>(done - lastDone).count();
+        if (dt < 0.1) interval = interval > 0 ? interval * 0.9 + dt * 0.1 : dt;  // pauses and menus don't count
+        lastDone = done;
+        presentFg(fg[slot], 0);
+        std::this_thread::sleep_until(done + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(interval * 0.5)));
+        presentFg(fg[slot], 1);
+        {
+            std::lock_guard l(pacerMutex);
+            pacerSlot = -1;
+        }
+        pacerCv.notify_all();
+    }
+}
+
+void Renderer::presentFg(FgSlot& s, int which) {
+    if (fgOutOfDate) return;
+    uint32_t idx;
+    VkResult r = vkAcquireNextImageKHR(dev, ctx->swapchain, UINT64_MAX, s.acquired[which], VK_NULL_HANDLE, &idx);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR) { fgOutOfDate = true; return; }
+    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) vkFail("vkAcquireNextImageKHR", r);
+    VK_CHECK(vkWaitForFences(dev, 1, &s.copyDone[which], VK_TRUE, UINT64_MAX));
+    VK_CHECK(vkResetFences(dev, 1, &s.copyDone[which]));
+
+    VkCommandBuffer cmd = s.copy[which];
+    vkResetCommandBuffer(cmd, 0);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &bi);
+    VkImage dst = ctx->swapImages[idx];
+    imageBarrier(cmd, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageCopy region{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {}, {ctx->swapExtent.width, ctx->swapExtent.height, 1}};
+    vkCmdCopyImage(cmd, which ? s.color.image : s.interp.image, VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    imageBarrier(cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    vkEndCommandBuffer(cmd);
+
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.waitSemaphoreCount = 1;
+    si.pWaitSemaphores = &s.acquired[which];
+    si.pWaitDstStageMask = &waitStage;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    si.signalSemaphoreCount = 1;
+    si.pSignalSemaphores = &renderDone[idx];
+    VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    pi.waitSemaphoreCount = 1;
+    pi.pWaitSemaphores = &renderDone[idx];
+    pi.swapchainCount = 1;
+    pi.pSwapchains = &ctx->swapchain;
+    pi.pImageIndices = &idx;
+    std::lock_guard lock(ctx->queueMutex);
+    VK_CHECK(vkQueueSubmit(ctx->queue, 1, &si, s.copyDone[which]));
+    r = vkQueuePresentKHR(ctx->queue, &pi);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) fgOutOfDate = true;
+    else if (r != VK_SUCCESS) vkFail("vkQueuePresentKHR", r);
+}
+
 void Renderer::render(const SceneParams& sp, const UiBatch& ui) {
     Frame& f = frames[frameSlot];
     VK_CHECK(vkWaitForFences(dev, 1, &f.fence, VK_TRUE, UINT64_MAX));
+    waitPacer((int)frameSlot);
     for (auto& d : f.deletions) d();
     f.deletions.clear();
 
     int w, h;
     SDL_Vulkan_GetDrawableSize(ctx->window, &w, &h);
     if (w <= 0 || h <= 0) return;
-    if ((uint32_t)w != ctx->swapExtent.width || (uint32_t)h != ctx->swapExtent.height || ctx->vsync != ctx->swapVsync) recreateSwapchain();
-    if (sp.renderScale != currentScale) {
+    if ((uint32_t)w != ctx->swapExtent.width || (uint32_t)h != ctx->swapExtent.height || ctx->vsync != ctx->swapVsync || fgOutOfDate)
+        recreateSwapchain();
+    int wantDlss = isDlss(sp.aa) && dlss.available() ? sp.aa : -1;
+    bool wantFg = sp.frameGen && dlss.frameGenAvailable();
+    if (sp.renderScale != currentScale || wantDlss != currentDlss || wantFg != currentFg) {
+        waitPacer(-1);
         vkDeviceWaitIdle(dev);
         destroyTargets();
         currentScale = sp.renderScale;
+        currentDlss = wantDlss;
+        currentFg = wantFg;
         createTargets();
     }
+    // Frame generation needs the world's depth and motion; menus outside a world present directly.
+    fgActive = currentFg && sp.inWorld;
+    if (!fgActive && fgWasActive) waitPacer(-1);
 
-    uint32_t imageIndex;
-    VkResult r = vkAcquireNextImageKHR(dev, ctx->swapchain, UINT64_MAX, f.acquired, VK_NULL_HANDLE, &imageIndex);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
-        recreateSwapchain();
-        return;
+    uint32_t imageIndex = 0;
+    if (!fgActive) {
+        VkResult r = vkAcquireNextImageKHR(dev, ctx->swapchain, UINT64_MAX, f.acquired, VK_NULL_HANDLE, &imageIndex);
+        if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+            recreateSwapchain();
+            return;
+        }
+        if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) vkFail("vkAcquireNextImageKHR", r);
     }
-    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) vkFail("vkAcquireNextImageKHR", r);
     VK_CHECK(vkResetFences(dev, 1, &f.fence));
 
     VkCommandBuffer cmd = f.cmd;
@@ -966,72 +1297,99 @@ void Renderer::render(const SceneParams& sp, const UiBatch& ui) {
 
     if (sp.inWorld) renderWorld(cmd, f, sp);
 
-    VkImage swapImg = ctx->swapImages[imageIndex];
-    imageBarrier(cmd, swapImg, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    color.imageView = ctx->swapViews[imageIndex];
-    color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    color.clearValue.color = {{0, 0, 0, 1}};
-    VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    ri.renderArea = {{0, 0}, ctx->swapExtent};
-    ri.layerCount = 1;
-    ri.colorAttachmentCount = 1;
-    ri.pColorAttachments = &color;
-    vkCmdBeginRendering(cmd, &ri);
-    setViewport(cmd, ctx->swapExtent.width, ctx->swapExtent.height);
+    auto beginPass = [&](VkImageView view, VkAttachmentLoadOp load) {
+        VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        color.imageView = view;
+        color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color.loadOp = load;
+        color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color.clearValue.color = {{0, 0, 0, 1}};
+        VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+        ri.renderArea = {{0, 0}, ctx->swapExtent};
+        ri.layerCount = 1;
+        ri.colorAttachmentCount = 1;
+        ri.pColorAttachments = &color;
+        vkCmdBeginRendering(cmd, &ri);
+        setViewport(cmd, ctx->swapExtent.width, ctx->swapExtent.height);
+    };
 
-    if (sp.inWorld) {
-        const bool pt = ctx->rtSupported && sp.mode == LightPathTraced;
-        const bool filmic = ctx->rtSupported && sp.mode != LightClassic;
-        glm::vec3 fwd(std::sin(sp.yaw) * std::cos(sp.pitch), std::sin(sp.pitch), -std::cos(sp.yaw) * std::cos(sp.pitch));
-        float fy = 1.0f / std::tan(glm::radians(sp.fov) * 0.5f);
-        glm::mat4 proj(0.0f);
-        proj[0][0] = fy / ((float)renderW / renderH);
-        proj[1][1] = -fy;
-        proj[2][3] = -1;
-        proj[3][2] = NEAR_PLANE;
-        PostPC pc;
-        pc.invViewProj = glm::inverse(proj * glm::lookAt(glm::vec3(0), fwd, glm::vec3(0, 1, 0)));
-        pc.selection = glm::vec4(glm::vec3(sp.selLo - sp.camPos), sp.hasSelection ? 1.0f : 0.0f);
-        pc.selSize = glm::vec4(glm::vec3(sp.selHi - sp.selLo), 0);
-        float angle = sp.timeOfDay * 6.2831853f;
-        float day = glm::clamp(std::sin(angle) * 3.0f + 0.3f, 0.0f, 1.0f);
-        pc.params = glm::vec4(pt ? 1.0f : 0.0f, filmic ? glm::mix(3.0f, 1.0f, day) : 1.0f, filmic ? 1.0f : 0.0f,
-                              2.0f / (fy * ctx->swapExtent.height));
-        // Brightness 0.5 is neutral; it bends the display curve to lift or deepen the darks.
-        pc.grade = glm::vec4(std::exp2((0.5f - sp.brightness) * 1.4f), 0, 0, 0);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, postPipe);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, postLayout, 0, 1, &postSets[frameIndex & 1], 0, nullptr);
-        vkCmdPushConstants(cmd, postLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
-        vkCmdDraw(cmd, 3, 1, 0, 0);
+    if (fgActive) {
+        // The scene goes to the HUD-less image, which is copied under the UI, then frame generation
+        // interpolates between the previous backbuffer and this one.
+        FgSlot& s = fg[frameSlot];
+        const auto GENERAL = VK_IMAGE_LAYOUT_GENERAL, ATTACH = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, READ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                   DEPTH_RO = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        imageBarrier(cmd, s.hudless.image, VK_IMAGE_LAYOUT_UNDEFINED, ATTACH);
+        beginPass(s.hudlessSrgb, VK_ATTACHMENT_LOAD_OP_CLEAR);
+        drawPost(cmd, sp);
+        vkCmdEndRendering(cmd);
+        imageBarrier(cmd, s.hudless.image, ATTACH, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        imageBarrier(cmd, s.color.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkImageCopy region{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {}, {ctx->swapExtent.width, ctx->swapExtent.height, 1}};
+        vkCmdCopyImage(cmd, s.hudless.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s.color.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        imageBarrier(cmd, s.color.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, ATTACH);
+        beginPass(s.colorSrgb, VK_ATTACHMENT_LOAD_OP_LOAD);
+        renderUi(cmd, f, ui);
+        vkCmdEndRendering(cmd);
+
+        imageBarrier(cmd, s.hudless.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, READ);
+        imageBarrier(cmd, s.color.image, ATTACH, READ);
+        imageBarrier(cmd, motion.image, GENERAL, READ);
+        imageBarrier(cmd, depth.image, DEPTH_RO, READ, VK_IMAGE_ASPECT_DEPTH_BIT);
+        dlss.evaluateFg(cmd, s.color, s.hudless, depth, motion, s.interp, fgJitter, fgCam, fgReset);
+        imageBarrier(cmd, s.color.image, READ, GENERAL);
+        imageBarrier(cmd, motion.image, READ, GENERAL);
+        imageBarrier(cmd, depth.image, READ, DEPTH_RO, VK_IMAGE_ASPECT_DEPTH_BIT);
+        memoryBarrier(cmd);
+        vkEndCommandBuffer(cmd);
+
+        VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        {
+            std::lock_guard lock(ctx->queueMutex);
+            VK_CHECK(vkQueueSubmit(ctx->queue, 1, &si, f.fence));
+        }
+        {
+            std::lock_guard l(pacerMutex);
+            fgJobs.push_back(frameSlot);
+        }
+        pacerCv.notify_all();
+    } else {
+        VkImage swapImg = ctx->swapImages[imageIndex];
+        imageBarrier(cmd, swapImg, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        beginPass(ctx->swapViews[imageIndex], VK_ATTACHMENT_LOAD_OP_CLEAR);
+        if (sp.inWorld) drawPost(cmd, sp);
+        renderUi(cmd, f, ui);
+        vkCmdEndRendering(cmd);
+        imageBarrier(cmd, swapImg, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        vkEndCommandBuffer(cmd);
+
+        VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        si.waitSemaphoreCount = 1;
+        si.pWaitSemaphores = &f.acquired;
+        si.pWaitDstStageMask = &waitStage;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        si.signalSemaphoreCount = 1;
+        si.pSignalSemaphores = &renderDone[imageIndex];
+        VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+        pi.waitSemaphoreCount = 1;
+        pi.pWaitSemaphores = &renderDone[imageIndex];
+        pi.swapchainCount = 1;
+        pi.pSwapchains = &ctx->swapchain;
+        pi.pImageIndices = &imageIndex;
+        VkResult r;
+        {
+            std::lock_guard lock(ctx->queueMutex);
+            VK_CHECK(vkQueueSubmit(ctx->queue, 1, &si, f.fence));
+            r = vkQueuePresentKHR(ctx->queue, &pi);
+        }
+        if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) recreateSwapchain();
+        else if (r != VK_SUCCESS) vkFail("vkQueuePresentKHR", r);
     }
-    renderUi(cmd, f, ui);
-    vkCmdEndRendering(cmd);
-    imageBarrier(cmd, swapImg, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-    vkEndCommandBuffer(cmd);
-
-    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    si.waitSemaphoreCount = 1;
-    si.pWaitSemaphores = &f.acquired;
-    si.pWaitDstStageMask = &waitStage;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cmd;
-    si.signalSemaphoreCount = 1;
-    si.pSignalSemaphores = &renderDone[imageIndex];
-    VK_CHECK(vkQueueSubmit(ctx->queue, 1, &si, f.fence));
-
-    VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-    pi.waitSemaphoreCount = 1;
-    pi.pWaitSemaphores = &renderDone[imageIndex];
-    pi.swapchainCount = 1;
-    pi.pSwapchains = &ctx->swapchain;
-    pi.pImageIndices = &imageIndex;
-    r = vkQueuePresentKHR(ctx->queue, &pi);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) recreateSwapchain();
-    else if (r != VK_SUCCESS) vkFail("vkQueuePresentKHR", r);
+    fgWasActive = fgActive;
 
     frameSlot = (frameSlot + 1) % FRAMES;
     ++frameIndex;

@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -52,6 +53,7 @@ struct VkCtx {
     VkExtent2D swapExtent{};
     std::vector<VkImage> swapImages;
     std::vector<VkImageView> swapViews;
+    std::mutex queueMutex;  // the frame generation pacer presents from its own thread
 
     void init(SDL_Window* window);
     void destroy();
@@ -61,7 +63,8 @@ struct VkCtx {
     Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memory);
     void destroyBuffer(Buffer& b);
     Image createImage(uint32_t w, uint32_t h, VkFormat format, VkImageUsageFlags usage, uint32_t mips = 1,
-                      uint32_t layers = 1, VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT, bool array = false);
+                      uint32_t layers = 1, VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT, bool array = false,
+                      VkImageCreateFlags flags = 0);
     void destroyImage(Image& img);
     void submitNow(const std::function<void(VkCommandBuffer)>& record);
     VkShaderModule loadShader(const std::string& path);

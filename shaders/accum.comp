@@ -14,9 +14,8 @@ layout(push_constant) uniform PC {
     mat4 invViewProj;
     mat4 prevViewProj;
     vec4 camDelta;  // xyz: current camera - previous camera, w: reset history
+    vec4 params;    // x: frames accumulated at most
 } pc;
-
-const float MAX_FRAMES = 96.0;
 
 void main() {
     ivec2 px = ivec2(gl_GlobalInvocationID.xy);
@@ -45,7 +44,7 @@ void main() {
         float prevDist = imageLoad(distIn, prevPx).r;
         if (abs(prevDist - dist) < 0.03 * dist + 0.05) {
             vec4 h = imageLoad(histIn, prevPx);
-            float n = min(h.a + 1.0, MAX_FRAMES);
+            float n = min(h.a + 1.0, pc.params.x);
             result = vec4(mix(h.rgb, cur, 1.0 / n), n);
         }
     }

@@ -48,6 +48,8 @@ inline bool isPartial(uint8_t b) { return blockInfo(b).mask != 0xFF; }  // a sha
 
 uint8_t shapedId(uint8_t material, int state);
 uint8_t shapeMaterial(uint8_t b);
+// Light levels each RGB channel loses passing through b: stained glass filters out the colours it doesn't pass.
+const uint8_t* tintLoss(uint8_t b);
 int shapeState(uint8_t b);
 Shape shapeOf(int state);
 uint8_t itemOf(uint8_t b);  // the inventory item a placed block counts as (shaped blocks lose their orientation)

@@ -1,6 +1,8 @@
 #include "world.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 
@@ -166,7 +168,20 @@ inline bool occludes(uint8_t b) { return blockInfo(b).opaque || isPartial(b); }
 struct Scratch {
     std::vector<uint8_t> blk, sky, lr, lg, lb;
     std::vector<uint32_t> queue;
+    std::vector<uint64_t> emitters;  // emission colour << 32 | cell
+    std::vector<float> acc;          // summed linear block light, RGB per cell
 };
+
+// Light levels are perceptual: each level down is about 15% less light, so two equal lights add about 4 levels.
+constexpr float LEVEL_STEP = 0.85f;
+const auto LEVEL_LIN = [] {
+    std::array<float, 16> t{};
+    for (int l = 1; l < 16; ++l) t[l] = std::pow(LEVEL_STEP, 15 - l);
+    return t;
+}();
+uint8_t linLevel(float v) {
+    return v <= 0 ? 0 : (uint8_t)std::clamp((int)std::lround(15 - std::log(v) / std::log(LEVEL_STEP)), 0, 15);
+}
 thread_local Scratch S;
 
 struct Mesher {
@@ -216,15 +231,36 @@ struct Mesher {
                 }
         flood(S.sky, nullptr, nullptr);
 
-        q.clear();
+        // Each light colour floods on its own and the colours are then added in linear light, so where lights
+        // overlap their colours mix (and brighten) instead of the brightest one winning.
+        auto& em = S.emitters;
+        em.clear();
         for (int i = 0; i < n; ++i) {
             const auto& e = blockInfo(S.blk[i]).emit;
-            if (e[0] | e[1] | e[2]) {
+            if (e[0] | e[1] | e[2]) em.push_back((uint64_t)(e[0] << 8 | e[1] << 4 | e[2]) << 32 | (uint32_t)i);
+        }
+        std::sort(em.begin(), em.end());
+        S.acc.assign(3 * n, 0.0f);
+        for (size_t run = 0; run < em.size();) {
+            const uint64_t colour = em[run] >> 32;
+            const auto& e = blockInfo(S.blk[(uint32_t)em[run]]).emit;
+            q.clear();
+            for (; run < em.size() && em[run] >> 32 == colour; ++run) {
+                int i = (uint32_t)em[run];
                 S.lr[i] = e[0]; S.lg[i] = e[1]; S.lb[i] = e[2];
                 q.push_back(i);
             }
+            flood(S.lr, &S.lg, &S.lb);
+            for (int i : q) {  // cells can be queued twice; zeroing them makes the repeat a no-op
+                if (!(S.lr[i] | S.lg[i] | S.lb[i])) continue;
+                S.acc[3 * i] += LEVEL_LIN[S.lr[i]]; S.acc[3 * i + 1] += LEVEL_LIN[S.lg[i]]; S.acc[3 * i + 2] += LEVEL_LIN[S.lb[i]];
+                S.lr[i] = S.lg[i] = S.lb[i] = 0;
+            }
         }
-        flood(S.lr, &S.lg, &S.lb);
+        if (!em.empty())
+            for (int i = 0; i < n; ++i) {
+                S.lr[i] = linLevel(S.acc[3 * i]); S.lg[i] = linLevel(S.acc[3 * i + 1]); S.lb[i] = linLevel(S.acc[3 * i + 2]);
+            }
 
         // Slabs and stairs stop light, but take their brightest neighbour's so faces looking into them aren't black.
         for (int y = 0; y <= top; ++y)
@@ -253,12 +289,16 @@ struct Mesher {
                 if (occludes(nb)) continue;
                 int att = nb == Water || nb == Leaves ? 2 : 1;
                 bool grew = false;
-                auto spread = [&](std::vector<uint8_t>& ch) {
-                    int v = ch[i] - att;
+                auto spread = [&](std::vector<uint8_t>& ch, int loss) {
+                    int v = ch[i] - att - loss;
                     if (v > ch[ni]) { ch[ni] = (uint8_t)v; grew = true; }
                 };
-                spread(a);
-                if (b) { spread(*b); spread(*c); }
+                if (b) {
+                    const uint8_t* t = tintLoss(nb);
+                    spread(a, t[0]); spread(*b, t[1]); spread(*c, t[2]);
+                } else {
+                    spread(a, 0);
+                }
                 if (grew) q.push_back(ni);
             }
         }
@@ -407,6 +447,7 @@ struct Mesher {
         glm::vec2 uv[4];
         glm::ivec4 l[4];
         int ao[4];
+        uint32_t wave = 0;  // corners on a liquid's surface, which the vertex shader animates
         for (int c = 0; c < 4; ++c) {
             const int* p = CORNERS[f][c];
             for (int i = 0; i < 3; ++i) pos[c][i] = p[i] ? hi[i] : lo[i];
@@ -426,17 +467,21 @@ struct Mesher {
             }
             l[c] = glm::ivec4(lsum + 0.5f);
             ao[c] = (int)(asum + 0.5f);
-            if (liquidTop && pos[c][1] == 1) pos[c][1] -= 0.125f;
+            if (liquidTop && pos[c][1] == 1) {
+                pos[c][1] -= 0.125f;
+                wave |= 1u << c;
+            }
             pos[c] += glm::vec3(x - 16, y, z - 16);
         }
-        pushQuad(out, pos, uv, l, ao, (uint32_t)f | (uint32_t)info.tex[f] << 3 | (uint32_t)emissive << 15 | (uint32_t)info.kind << 16);
+        pushQuad(out, pos, uv, l, ao, (uint32_t)f | (uint32_t)info.tex[f] << 3 | (uint32_t)emissive << 15 | (uint32_t)info.kind << 16, wave);
     }
 
-    static void pushQuad(std::vector<Vertex>& out, const glm::vec3* pos, const glm::vec2* uv, const glm::ivec4* l, const int* ao, uint32_t bits) {
+    static void pushQuad(std::vector<Vertex>& out, const glm::vec3* pos, const glm::vec2* uv, const glm::ivec4* l, const int* ao, uint32_t bits,
+                         uint32_t wave = 0) {
         Vertex v[4];
         for (int c = 0; c < 4; ++c) {
             v[c].x = pos[c].x; v[c].y = pos[c].y; v[c].z = pos[c].z;
-            v[c].packed = bits | (uint32_t)ao[c] << 13 | (uint32_t)std::lround(uv[c].x * 16) << 18 | (uint32_t)std::lround(uv[c].y * 16) << 23;
+            v[c].packed = bits | (wave >> c & 1u) << 11 | (uint32_t)ao[c] << 13 | (uint32_t)std::lround(uv[c].x * 16) << 18 | (uint32_t)std::lround(uv[c].y * 16) << 23;
             v[c].light = (uint32_t)l[c].x | (uint32_t)l[c].y << 8 | (uint32_t)l[c].z << 16 | (uint32_t)l[c].w << 24;
         }
         // Split along the brighter diagonal so AO interpolates symmetrically.

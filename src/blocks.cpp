@@ -98,6 +98,13 @@ uint8_t shapedId(uint8_t material, int state) {
     return Air;
 }
 uint8_t shapeMaterial(uint8_t b) { return kShapeMaterials[(b - ShapedBase) / SHAPE_STATES]; }
+
+const uint8_t* tintLoss(uint8_t b) {
+    // Matched to the textures' average colour; indexed by the stained glass texture layer (18-22).
+    static const uint8_t loss[6][3] = {{0, 0, 0}, {1, 12, 12}, {0, 7, 13}, {0, 2, 10}, {9, 1, 10}, {4, 11, 3}};
+    int t = blockInfo(b).tex[0] - 17;
+    return loss[blockInfo(b).kind == KindTranslucent && t >= 1 && t <= 5 ? t : 0];
+}
 int shapeState(uint8_t b) { return (b - ShapedBase) % SHAPE_STATES; }
 uint8_t itemOf(uint8_t b) { return isShaped(b) ? shapedId(shapeMaterial(b), kCanonicalState[shapeOf(shapeState(b))]) : b; }
 
