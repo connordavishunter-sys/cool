@@ -71,7 +71,7 @@ in patches on grass; breaking one gives it to you. Caves below y=10 are filled w
 
 ## Building blocks
 
-Planks, logs and all six lights come as slabs, stairs, vertical slabs and sideways stairs. They're oriented as you
+Planks, logs, stone and all six lights come as slabs, stairs, vertical slabs and sideways stairs. They're oriented as you
 place them:
 
 - **Slabs and stairs** go on the bottom half, or upside down when you click the top half of a block's side or the

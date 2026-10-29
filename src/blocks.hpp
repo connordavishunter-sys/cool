@@ -3,7 +3,7 @@
 #include <vector>
 
 // Slabs, stairs, vertical slabs and sideways stairs come in every orientation for each of these materials.
-constexpr int SHAPE_MATERIALS = 8, SHAPE_STATES = 18;
+constexpr int SHAPE_MATERIALS = 9, SHAPE_STATES = 18;
 
 enum Block : uint8_t {
     Air, Grass, Dirt, Stone, Sand, Planks, Log, Glass, Water,
@@ -65,7 +65,7 @@ template <class Get> uint8_t paneConnections(Get get, int x, int y, int z) {
 }
 int blockBoxes(uint8_t b, uint8_t conn, Box out[8]);  // selection and collision boxes
 
-extern const uint8_t kShapeMaterials[SHAPE_MATERIALS];  // full blocks that have shaped forms
+extern const uint8_t kShapeMaterials[SHAPE_MATERIALS];  // full blocks that have shaped forms; append only (block ids)
 const std::vector<uint8_t>& creativeItems();  // inventory layout
 extern const char* const kBlockTextures[];
 extern const int kBlockTextureCount;

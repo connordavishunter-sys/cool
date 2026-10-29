@@ -11,7 +11,7 @@ const char* const kBlockTextures[] = {
 };
 const int kBlockTextureCount = sizeof(kBlockTextures) / sizeof(kBlockTextures[0]);
 
-const uint8_t kShapeMaterials[SHAPE_MATERIALS] = {Planks, Log, WhiteLight, RedLight, OrangeLight, YellowLight, BlueLight, PurpleLight};
+const uint8_t kShapeMaterials[SHAPE_MATERIALS] = {Planks, Log, WhiteLight, RedLight, OrangeLight, YellowLight, BlueLight, PurpleLight, Stone};
 static const char* const kShapeNames[] = {"Slab", "Vertical Slab", "Stairs", "Sideways Stairs"};
 static const int kCanonicalState[] = {0, 5, 9, 17};  // the orientation shown in the inventory
 
@@ -149,8 +149,10 @@ const std::vector<uint8_t>& creativeItems() {
             GlassPane, RedStainedPane, OrangeStainedPane, YellowStainedPane, GreenStainedPane, PurpleStainedPane,
             WhiteLight, RedLight, OrangeLight, YellowLight, BlueLight, PurpleLight,
         };
-        for (uint8_t m : kShapeMaterials)
-            for (int s : kCanonicalState) v.push_back(shapedId(m, s));
+        for (bool lights : {false, true})  // building materials first, then the lights
+            for (uint8_t m : kShapeMaterials)
+                if (isEmissive(m) == lights)
+                    for (int s : kCanonicalState) v.push_back(shapedId(m, s));
         return v;
     }();
     return items;
