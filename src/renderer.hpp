@@ -49,6 +49,7 @@ struct SceneParams {
     bool hasSelection = false;
     glm::dvec3 selLo{0}, selHi{1};  // world space bounds of the selected block's shape
     const std::vector<Vertex>* particles = nullptr;  // camera-relative quads
+    const std::vector<Vertex>* clouds = nullptr;     // camera-relative quads
     bool resetAccumulation = false;
 };
 
@@ -69,7 +70,7 @@ public:
 
 private:
     static constexpr int FRAMES = 2;
-    static constexpr uint32_t MAX_INSTANCES = 4096, MAX_LIGHTS = 128, MAX_QUADS = 1 << 18, MAX_PARTICLE_QUADS = 2048;
+    static constexpr uint32_t MAX_INSTANCES = 4096, MAX_LIGHTS = 128, MAX_QUADS = 1 << 18, MAX_PARTICLE_QUADS = 2048, MAX_CLOUD_QUADS = 8192;
     static constexpr VkDeviceSize STAGING_SIZE = 32 << 20, BLAS_SCRATCH_SIZE = 64 << 20, UI_VERTS = 1 << 17;
 
     struct GpuChunk {
@@ -87,7 +88,7 @@ private:
         VkCommandBuffer cmd = VK_NULL_HANDLE;
         VkFence fence = VK_NULL_HANDLE;
         VkSemaphore acquired = VK_NULL_HANDLE;
-        Buffer ubo, lights, chunkTable, instances, staging, uiVerts, particles, tlasBuffer, tlasScratch, blasScratch;
+        Buffer ubo, lights, chunkTable, instances, staging, uiVerts, particles, clouds, tlasBuffer, tlasScratch, blasScratch;
         VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
         VkDescriptorSet worldSet = VK_NULL_HANDLE;
         std::vector<std::function<void()>> deletions;

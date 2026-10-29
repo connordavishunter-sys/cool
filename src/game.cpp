@@ -110,6 +110,7 @@ static WorldMeta readMeta(const fs::path& dir) {
     readValue(kv, "spawnX", m.spawn.x);
     readValue(kv, "spawnY", m.spawn.y);
     readValue(kv, "spawnZ", m.spawn.z);
+    for (const auto& r : kGameRules) readValue(kv, (std::string("rule.") + r.name).c_str(), m.rules.*r.value);
     auto valid = [](int id) { return isBlockItem((uint8_t)id) || id == ItemFood; };
     if (bool legacy = !kv.count("items"); !legacy || kv.count("inventory")) {
         std::istringstream ss(kv[legacy ? "inventory" : "items"]);
@@ -138,7 +139,9 @@ static void writeMeta(const fs::path& dir, const WorldMeta& m) {
       << "\nx=" << m.pos.x << "\ny=" << m.pos.y << "\nz=" << m.pos.z << "\nyaw=" << m.yaw << "\npitch=" << m.pitch
       << "\nflying=" << m.flying << "\ntime=" << m.time << "\nslot=" << m.slot << "\nmode=" << m.mode
       << "\nhealth=" << m.health << "\nhunger=" << m.hunger << "\nsaturation=" << m.saturation << "\nexhaustion=" << m.exhaustion
-      << "\nspawnX=" << m.spawn.x << "\nspawnY=" << m.spawn.y << "\nspawnZ=" << m.spawn.z << "\nitems=";
+      << "\nspawnX=" << m.spawn.x << "\nspawnY=" << m.spawn.y << "\nspawnZ=" << m.spawn.z;
+    for (const auto& r : kGameRules) f << "\nrule." << r.name << '=' << m.rules.*r.value;
+    f << "\nitems=";
     for (const auto& s : m.inv.slots) f << (int)s.id << ':' << (int)s.count << ' ';
     f << "\n";
 }
@@ -192,7 +195,7 @@ Game::~Game() {
 void Game::setScreen(Screen s) {
     screen = s;
     SDL_SetRelativeMouseMode(s == Screen::Playing ? SDL_TRUE : SDL_FALSE);
-    if (s == Screen::CreateWorld) SDL_StartTextInput();
+    if (s == Screen::CreateWorld || s == Screen::Chat) SDL_StartTextInput();
     else SDL_StopTextInput();
     mouseLeft = mouseRight = false;
 }
@@ -260,6 +263,8 @@ void Game::openWorld(const WorldMeta& m) {
     fallStart = player.pos.y;
     breakProgress = 0;
     particles.clear();
+    clouds = std::make_unique<Clouds>(meta.seed);
+    chat.clear();
     held = {};
     loadingStart = now;
     autosaveTimer = 0;
@@ -328,11 +333,12 @@ void Game::run() {
         case Screen::Paused: drawHud(); drawPause(); break;
         case Screen::Inventory: drawHud(); drawInventory(); break;
         case Screen::Dead: drawHud(); drawDeath(); break;
+        case Screen::Chat: drawHud(); drawChat(true); break;
         }
 
         SceneParams sp;
         sp.inWorld = world && screen != Screen::Loading && (screen == Screen::Playing || screen == Screen::Paused ||
-                                                             screen == Screen::Inventory || screen == Screen::Dead ||
+                                                             screen == Screen::Inventory || screen == Screen::Dead || screen == Screen::Chat ||
                                                              optionsReturn == Screen::Paused);
         if (sp.inWorld) {
             sp.camPos = player.eye();
@@ -346,6 +352,7 @@ void Game::run() {
             sp.underwater = world->get((int)std::floor(sp.camPos.x), (int)std::floor(sp.camPos.y), (int)std::floor(sp.camPos.z)) == Water;
             sp.resetAccumulation = worldEdited;
             sp.particles = &particles.mesh(sp.camPos, sp.yaw, sp.pitch);
+            sp.clouds = &clouds->mesh(sp.camPos, now, std::min(opts.renderDist * 32.0, 384.0));
             RayHit hit;
             if (screen == Screen::Playing && raycast(*world, player.eye(), glm::dvec3(player.look()), reach(), hit)) {
                 sp.hasSelection = true;
@@ -406,7 +413,10 @@ void Game::handleEvent(const SDL_Event& e, UiInput& in) {
             player.pitch = std::clamp(player.pitch - e.motion.yrel * s, -1.5605f, 1.5605f);
         }
         break;
-    case SDL_TEXTINPUT: in.text += e.text.text; break;
+    case SDL_TEXTINPUT:
+        if (swallowText && now - chatOpenedAt < 0.1) { swallowText = false; break; }  // the key that opened the chat
+        in.text += e.text.text;
+        break;
     case SDL_KEYDOWN: {
         SDL_Keycode k = e.key.keysym.sym;
         if (k == SDLK_BACKSPACE) in.backspace = true;
@@ -421,6 +431,8 @@ void Game::handleEvent(const SDL_Event& e, UiInput& in) {
         if (screen == Screen::Playing) {
             if (k == SDLK_ESCAPE) setScreen(Screen::Paused);
             else if (k == SDLK_e) setScreen(Screen::Inventory);
+            else if (k == SDLK_t) openChat("");
+            else if (k == SDLK_SLASH) openChat("/");
             else if (k == SDLK_F3) showDebug = !showDebug;
             else if (k == SDLK_F4 && vk.rtSupported) opts.lighting = (opts.lighting + 1) % LightModeCount;
             else if (k >= SDLK_1 && k <= SDLK_9) { meta.slot = k - SDLK_1; slotChangedAt = now; }
@@ -430,6 +442,12 @@ void Game::handleEvent(const SDL_Event& e, UiInput& in) {
             }
         } else if (screen == Screen::Inventory && (k == SDLK_e || k == SDLK_ESCAPE)) {
             closeInventory();
+        } else if (screen == Screen::Chat) {
+            if (k == SDLK_ESCAPE) setScreen(Screen::Playing);
+            if ((k == SDLK_UP || k == SDLK_DOWN) && !sent.empty()) {
+                sentPos = k == SDLK_UP ? (sentPos > 0 ? sentPos - 1 : 0) : std::min(sentPos + 1, sent.size());
+                chatInput = sentPos < sent.size() ? sent[sentPos] : "";
+            }
         } else if (screen == Screen::Paused && k == SDLK_ESCAPE) {
             setScreen(Screen::Playing);
         }
@@ -510,7 +528,7 @@ void Game::breakBlock(glm::ivec3 p) {
         particles.burst(*world, p + glm::ivec3(0, 1, 0), above);
     }
     worldEdited = true;
-    if (!survival()) return;
+    if (!survival() || !meta.rules.doTileDrops) return;
     meta.inv.add(b == Grass ? (uint8_t)Dirt : itemOf(b), 1);  // whatever doesn't fit is lost
     if (isFlower(above)) meta.inv.add(above, 1);
     if (b == Leaves && rng() % 6 == 0) meta.inv.add(ItemFood, 1);
@@ -520,7 +538,9 @@ void Game::breakBlock(glm::ivec3 p) {
 void Game::hurt(int amount) {
     meta.health = std::max(0, meta.health - amount);
     hurtAt = now;
-    if (meta.health == 0) setScreen(Screen::Dead);
+    if (meta.health > 0) return;
+    if (!meta.rules.keepInventory) meta.inv = {};
+    setScreen(Screen::Dead);
 }
 
 void Game::respawn() {
@@ -552,7 +572,7 @@ void Game::updateSurvival(double dt, glm::dvec3 prev) {
     }
     player.canSprint = meta.hunger > 6;
 
-    if (meta.hunger >= 18 && meta.health < 20) {
+    if (meta.hunger >= 18 && meta.health < 20 && meta.rules.naturalRegeneration) {
         if ((regenTimer += dt) >= 4) { regenTimer = 0; ++meta.health; meta.exhaustion += 6; }
     } else if (meta.hunger == 0 && meta.health > 1) {
         if ((regenTimer += dt) >= 4) { regenTimer = 0; hurt(1); }
@@ -564,13 +584,13 @@ void Game::updateSurvival(double dt, glm::dvec3 prev) {
         fallStart = player.pos.y;
     } else if (player.onGround) {
         double fall = fallStart - player.pos.y - 3;
-        if (fall > 0) hurt((int)std::ceil(fall));
+        if (fall > 0 && meta.rules.fallDamage) hurt((int)std::ceil(fall));
         fallStart = player.pos.y;
     } else {
         fallStart = std::max(fallStart, player.pos.y);
     }
 
-    if (player.inLava && (lavaTimer -= dt) <= 0) { hurt(4); lavaTimer = 0.5; }
+    if (player.inLava && meta.rules.fireDamage && (lavaTimer -= dt) <= 0) { hurt(4); lavaTimer = 0.5; }
     if (!player.inLava) lavaTimer = 0;
 }
 
@@ -637,7 +657,7 @@ void Game::updateGame(double dt) {
         if (mouseRight && (placeTimer -= dt) <= 0) { interact(false); placeTimer = 0.2; }
     }
     if (screen != Screen::Paused && !(screen == Screen::Options && optionsReturn == Screen::Paused)) particles.update(*world, dt);
-    meta.time += dt / 1200.0;  // 20 minute day
+    if (meta.rules.doDaylightCycle) meta.time += dt / 1200.0;  // 20 minute day
     if ((autosaveTimer += dt) > 60) { saveWorld(); autosaveTimer = 0; }
 }
 
@@ -935,6 +955,7 @@ void Game::drawHud() {
         uint8_t a = (uint8_t)(255 * std::clamp(2.0 - (now - slotChangedAt), 0.0, 1.0));
         ui.textCentered(itemName(sel.id), ui.width / 2, ui.height - (survival() ? 50 : 40), rgba(255, 255, 255, a));
     }
+    if (screen != Screen::Chat) drawChat(false);
     if (player.flying && screen == Screen::Playing) ui.text("Flying", 3, ui.height - 11, rgba(200, 200, 210), 7);
 
     if (showDebug) {
@@ -1038,7 +1059,7 @@ void Game::drawStatusBars() {
 void Game::drawDeath() {
     ui.fill(0, 0, ui.width, ui.height, rgba(120, 10, 10, 110));
     ui.textCentered("You died!", ui.width / 2, ui.height * 0.3f, WHITE, 16);
-    ui.textCentered("Your inventory is safe.", ui.width / 2, ui.height * 0.3f + 22, rgba(220, 200, 200), 7);
+    ui.textCentered(meta.rules.keepInventory ? "Your inventory is safe." : "Your items are lost.", ui.width / 2, ui.height * 0.3f + 22, rgba(220, 200, 200), 7);
     float bw = 200, x = (ui.width - bw) / 2, y = ui.height * 0.5f;
     if (ui.button("Respawn", x, y, bw, 20)) respawn();
     if (ui.button("Save and Quit to Title", x, y + 26, bw, 20)) {

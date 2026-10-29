@@ -188,6 +188,9 @@ struct Mesher {
     int top = 0;  // everything above is open air with full skylight
 
     uint8_t block(int x, int y, int z) const { return y < 0 || y >= CH ? (uint8_t)Air : S.blk[ri(x, y, z)]; }
+    uint8_t cells(uint8_t b, int x, int y, int z) const {  // occupied half-block cells, with stair corners
+        return stairMask(b, [&](int px, int py, int pz) { return block(px, py, pz); }, x, y, z);
+    }
     bool opaqueAt(int x, int y, int z) const {  // stops light and casts AO
         if (y < 0) return true;
         return y < CH && occludes(S.blk[ri(x, y, z)]);
@@ -342,7 +345,6 @@ struct Mesher {
     // Cubes, including slabs and stairs: each face is split into quarters wherever a half-block cell is
     // exposed, either on the block's boundary or on its middle plane (the tread of a stair).
     bool emitCube(std::vector<Vertex>& out, int x, int y, int z, uint8_t b, bool emissive) {
-        const BlockInfo& info = blockInfo(b);
         bool liquidTop = isLiquid(b) && block(x, y + 1, z) != b, any = false;
         for (int f = 0; f < 6; ++f) {
             const int* d = DIRS[f];
@@ -350,7 +352,8 @@ struct Mesher {
             uint8_t nb = block(x + d[0], y + d[1], z + d[2]);
             const BlockInfo& ni = blockInfo(nb);
             bool covers = ni.opaque || (nb == b && b != Leaves);  // leaves keep inner faces
-            if (info.mask == 0xFF && covers) continue;
+            const uint8_t mask = cells(b, x, y, z), nmask = isPartial(nb) ? cells(nb, x + d[0], y + d[1], z + d[2]) : 0;
+            if (mask == 0xFF && covers) continue;
 
             const int axis = f / 2, ta = (axis + 1) % 3, tb = (axis + 2) % 3, side = f % 2 == 0;
             uint8_t outer = 0, inner = 0;
@@ -358,10 +361,10 @@ struct Mesher {
                 int c[3];
                 c[axis] = side; c[ta] = q & 1; c[tb] = q >> 1;
                 auto bit = [&](uint8_t mask) { return mask >> (c[0] + 2 * c[2] + 4 * c[1]) & 1; };
-                bool filled = bit(info.mask);
+                bool filled = bit(mask);
                 c[axis] = 1 - side;  // the neighbour's touching cell, or this block's inner cell
-                if (filled) outer |= (isPartial(nb) ? !bit(ni.mask) : !covers) << q;
-                else inner |= bit(info.mask) << q;
+                if (filled) outer |= (isPartial(nb) ? !bit(nmask) : !covers) << q;
+                else inner |= bit(mask) << q;
             }
             for (int layer = 0; layer < 2; ++layer) {
                 uint8_t set = layer ? inner : outer;
@@ -381,7 +384,7 @@ struct Mesher {
 
     bool emitPane(std::vector<Vertex>& out, int x, int y, int z, uint8_t b) {
         Box boxes[8];
-        int n = blockBoxes(b, paneConnections([&](int px, int py, int pz) { return block(px, py, pz); }, x, y, z), boxes);
+        int n = blockBoxes(b, blockShape(b, [&](int px, int py, int pz) { return block(px, py, pz); }, x, y, z), boxes);
         bool any = false;
         for (int i = 0; i < n; ++i)
             for (int f = 0; f < 6; ++f) {

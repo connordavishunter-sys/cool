@@ -14,8 +14,7 @@ struct WorldBox { glm::dvec3 lo, hi; };
 // World-space boxes of block b at p, kept in doubles so they stay exact far from the origin.
 static int worldBoxes(const World& world, glm::ivec3 p, uint8_t b, WorldBox out[8]) {
     Box boxes[8];
-    uint8_t conn = isPane(b) ? paneConnections([&](int x, int y, int z) { return world.get(x, y, z); }, p.x, p.y, p.z) : 0;
-    int n = blockBoxes(b, conn, boxes);
+    int n = blockBoxes(b, blockShape(b, [&](int x, int y, int z) { return world.get(x, y, z); }, p.x, p.y, p.z), boxes);
     for (int i = 0; i < n; ++i)
         out[i] = {glm::dvec3(p) + glm::dvec3(boxes[i].lo[0], boxes[i].lo[1], boxes[i].lo[2]),
                   glm::dvec3(p) + glm::dvec3(boxes[i].hi[0], boxes[i].hi[1], boxes[i].hi[2])};

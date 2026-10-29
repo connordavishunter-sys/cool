@@ -1,4 +1,5 @@
 #pragma once
+#include "clouds.hpp"
 #include "items.hpp"
 #include "particles.hpp"
 #include "player.hpp"
@@ -31,6 +32,21 @@ struct Options {
 
 enum GameMode { Creative, Survival };
 
+// Per-world rules, changed with /gamerule and saved in level.dat.
+struct GameRules {
+    bool doDaylightCycle = true, keepInventory = true, fallDamage = true, fireDamage = true, naturalRegeneration = true,
+         doTileDrops = true;
+};
+struct GameRule { const char* name; bool GameRules::*value; const char* desc; };
+inline constexpr GameRule kGameRules[] = {
+    {"doDaylightCycle", &GameRules::doDaylightCycle, "time of day advances"},
+    {"keepInventory", &GameRules::keepInventory, "keep your items when you die"},
+    {"fallDamage", &GameRules::fallDamage, "falling hurts"},
+    {"fireDamage", &GameRules::fireDamage, "lava hurts"},
+    {"naturalRegeneration", &GameRules::naturalRegeneration, "health regenerates when well fed"},
+    {"doTileDrops", &GameRules::doTileDrops, "broken blocks drop items"},
+};
+
 struct WorldMeta {
     std::string name, folder;
     uint64_t seed = 0;
@@ -47,6 +63,7 @@ struct WorldMeta {
     int health = 20, hunger = 20;
     float saturation = 5, exhaustion = 0;
     glm::dvec3 spawn{0, -1, 0};  // y < 0 until the first spawn is chosen
+    GameRules rules;
 };
 
 class Game {
@@ -56,7 +73,7 @@ public:
     void run();
 
 private:
-    enum class Screen { Title, Worlds, CreateWorld, ConfirmDelete, Options, RayTracing, Loading, Playing, Paused, Inventory, Dead };
+    enum class Screen { Title, Worlds, CreateWorld, ConfirmDelete, Options, RayTracing, Loading, Playing, Paused, Inventory, Dead, Chat };
 
     std::filesystem::path base, savesDir;
     SDL_Window* window = nullptr;
@@ -84,6 +101,7 @@ private:
     WorldMeta meta;
     Player player;
     Particles particles;
+    std::unique_ptr<Clouds> clouds;
     bool showDebug = false;
     double lastSpace = -1, breakTimer = 0, placeTimer = 0, autosaveTimer = 0, loadingStart = 0, slotChangedAt = -10;
     bool worldEdited = false;
@@ -94,6 +112,15 @@ private:
     double breakProgress = 0, chipTimer = 0, fallStart = 0, lavaTimer = 0, regenTimer = 0, hurtAt = -10;
     ItemStack held;  // stack carried by the mouse in the inventory
     float craftScroll = 0;
+
+    // Chat and commands
+    struct ChatLine { std::string text; uint32_t color; double at; };
+    std::vector<ChatLine> chat;
+    std::vector<std::string> sent;  // earlier messages, recalled with up and down
+    std::string chatInput;
+    size_t sentPos = 0;
+    double chatOpenedAt = -10;
+    bool chatFocus = true, swallowText = false;
 
     // Music
     std::vector<Mix_Music*> tracks;
@@ -122,6 +149,9 @@ private:
     void hurt(int amount);
     void respawn();
     void closeInventory();
+    void openChat(const std::string& prefix);
+    void say(const std::string& text, uint32_t color = 0xFFFFFFFF);
+    void runCommand(const std::string& line);
 
     void drawTitle();
     void drawWorlds();
@@ -135,6 +165,7 @@ private:
     void drawInventory();
     void drawSurvivalInventory();
     void drawDeath();
+    void drawChat(bool open);
     void drawStatusBars();
     void drawStack(const ItemStack& s, float x, float y, float slot);
     void drawHotbar(float y, bool clickable);

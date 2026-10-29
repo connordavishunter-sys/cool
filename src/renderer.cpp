@@ -1,5 +1,7 @@
 #include "renderer.hpp"
 
+#include "clouds.hpp"
+
 #include <SDL2/SDL_image.h>
 #include <SDL2/SDL_vulkan.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -233,6 +235,7 @@ void Renderer::init(VkCtx& c, const std::string& baseDir, const Font& font) {
         f.staging = c.createBuffer(STAGING_SIZE, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
         f.uiVerts = c.createBuffer(UI_VERTS * sizeof(UiVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, HOST);
         f.particles = c.createBuffer(MAX_PARTICLE_QUADS * 4 * sizeof(Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, HOST);
+        f.clouds = c.createBuffer(MAX_CLOUD_QUADS * 4 * sizeof(Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, HOST);
         if (!rt) continue;
 
         const VkBufferUsageFlags asUsage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
@@ -693,7 +696,7 @@ void Renderer::destroy() {
         vkDestroyFence(dev, f.fence, nullptr);
         vkDestroySemaphore(dev, f.acquired, nullptr);
         if (f.tlas) ctx->vkDestroyAccelerationStructureKHR(dev, f.tlas, nullptr);
-        for (Buffer* b : {&f.ubo, &f.lights, &f.chunkTable, &f.instances, &f.staging, &f.uiVerts, &f.particles, &f.tlasBuffer, &f.tlasScratch, &f.blasScratch})
+        for (Buffer* b : {&f.ubo, &f.lights, &f.chunkTable, &f.instances, &f.staging, &f.uiVerts, &f.particles, &f.clouds, &f.tlasBuffer, &f.tlasScratch, &f.blasScratch})
             ctx->destroyBuffer(*b);
     }
     for (auto s : renderDone) vkDestroySemaphore(dev, s, nullptr);
@@ -1049,18 +1052,25 @@ void Renderer::renderWorld(VkCommandBuffer cmd, Frame& f, const SceneParams& sp)
         drawPass(equalPipes[KindOpaque], KindOpaque, false);
         drawPass(equalPipes[KindCutout], KindCutout, false);
     }
-    if (sp.particles && !sp.particles->empty()) {
-        uint32_t quads = std::min<uint32_t>((uint32_t)sp.particles->size() / 4, MAX_PARTICLE_QUADS);
-        std::memcpy(f.particles.mapped, sp.particles->data(), quads * 4 * sizeof(Vertex));
+    // Camera-relative quads streamed from the CPU each frame.
+    auto drawStream = [&](const std::vector<Vertex>* v, Buffer& buf, uint32_t maxQuads, int kind) {
+        if (!v || v->empty()) return;
+        uint32_t quads = std::min<uint32_t>((uint32_t)v->size() / 4, maxQuads);
+        std::memcpy(buf.mapped, v->data(), quads * 4 * sizeof(Vertex));
         glm::vec4 zero4(0);
         VkDeviceSize zero = 0;
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, worldPipes[KindCutout]);
-        vkCmdBindVertexBuffers(cmd, 0, 1, &f.particles.buffer, &zero);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, worldPipes[kind]);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &buf.buffer, &zero);
         vkCmdPushConstants(cmd, worldLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16, &zero4);
         vkCmdDrawIndexed(cmd, quads * 6, 1, 0, 0, 0);
-    }
+    };
+    drawStream(sp.particles, f.particles, MAX_PARTICLE_QUADS, KindCutout);
+    // Clouds are blended under the water and glass when seen from below, over them from above.
+    const bool aboveClouds = sp.camPos.y > Clouds::HEIGHT;
+    if (!aboveClouds) drawStream(sp.clouds, f.clouds, MAX_CLOUD_QUADS, KindTranslucent);
     drawPass(worldPipes[KindWater], KindWater, true);
     drawPass(worldPipes[KindTranslucent], KindTranslucent, true);
+    if (aboveClouds) drawStream(sp.clouds, f.clouds, MAX_CLOUD_QUADS, KindTranslucent);
     vkCmdEndRendering(cmd);
 
     imageBarrier(cmd, hdr.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);

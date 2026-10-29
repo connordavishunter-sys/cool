@@ -8,6 +8,7 @@ const char* const kBlockTextures[] = {
     "glass", "water", "white_light", "red_light", "orange_light", "yellow_light", "blue_light", "purple_light", "leaves", "lava",
     "red_stained_glass", "orange_stained_glass", "yellow_stained_glass", "green_stained_glass", "purple_stained_glass",
     "red_flower", "orange_flower", "yellow_flower", "green_flower", "blue_flower", "purple_flower",
+    "cloud",
 };
 const int kBlockTextureCount = sizeof(kBlockTextures) / sizeof(kBlockTextures[0]);
 
@@ -54,16 +55,11 @@ static const BlockInfo kBase[ShapedBase] = {
 };
 #undef ALL
 
-static uint8_t halfMask(int d) {  // the half towards +X, -X, +Z or -Z
-    static const uint8_t m[4] = {0xAA, 0x55, 0xCC, 0x33};
-    return m[d];
-}
-
 static uint8_t stateMask(int s) {
     if (s < 2) return s ? 0xF0 : 0x0F;
-    if (s < 6) return halfMask(s - 2);
+    if (s < 6) return HALF_MASK[s - 2];
     if (s < 14) {
-        uint8_t h = halfMask((s - 6) & 3);
+        uint8_t h = HALF_MASK[(s - 6) & 3];
         return s >= 10 ? 0xF0 | (h & 0x0F) : 0x0F | (h & 0xF0);
     }
     int q = s - 14;
@@ -108,7 +104,7 @@ const uint8_t* tintLoss(uint8_t b) {
 int shapeState(uint8_t b) { return (b - ShapedBase) % SHAPE_STATES; }
 uint8_t itemOf(uint8_t b) { return isShaped(b) ? shapedId(shapeMaterial(b), kCanonicalState[shapeOf(shapeState(b))]) : b; }
 
-int blockBoxes(uint8_t b, uint8_t conn, Box out[8]) {
+int blockBoxes(uint8_t b, uint8_t shape, Box out[8]) {
     const BlockInfo& info = blockInfo(b);
     int n = 0;
     auto add = [&](float x0, float y0, float z0, float x1, float y1, float z1, uint8_t skip = 0) {
@@ -119,7 +115,7 @@ int blockBoxes(uint8_t b, uint8_t conn, Box out[8]) {
     } else if (info.model == ModelPane) {
         // A bar along X through the middle, plus separate arms along Z; a lone pane is a cross.
         const float a = 7 / 16.0f, c = 9 / 16.0f;
-        if (!conn) conn = 15;
+        uint8_t conn = shape ? shape : 15;
         bool x = conn & 3, px = conn & 1, nx = conn & 2, pz = conn & 4, nz = conn & 8;
         if (x || !(pz && nz)) {
             if (x) add(nx ? 0 : a, 0, a, px ? 1 : c, 1, c);
@@ -128,11 +124,11 @@ int blockBoxes(uint8_t b, uint8_t conn, Box out[8]) {
         } else {
             add(a, 0, 0, c, 1, 1);
         }
-    } else if (info.mask == 0xFF) {
+    } else if (shape == 0xFF) {
         add(0, 0, 0, 1, 1, 1);
     } else {
         for (int i = 0; i < 8; ++i)
-            if (info.mask >> i & 1) {
+            if (shape >> i & 1) {
                 float x = (i & 1) * 0.5f, z = (i >> 1 & 1) * 0.5f, y = (i >> 2) * 0.5f;
                 add(x, y, z, x + 0.5f, y + 0.5f, z + 0.5f);
             }

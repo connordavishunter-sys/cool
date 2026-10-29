@@ -259,7 +259,8 @@ void main() {
     if (fd.fog.z > 0.5) {
         col = mix(col, WATER_FOG * max(fd.sunDir.w, 0.15), 1.0 - exp(-dist * 0.08));
     } else {
-        col = mix(col, skyColor(V, false), smoothstep(fd.fog.x, fd.fog.y, dist));
+        bool cloud = (vPacked & (1u << 12)) != 0u;  // clouds reach past the terrain and fade by horizontal distance
+        col = mix(col, skyColor(V, false), cloud ? smoothstep(fd.fog.y, fd.fog.y * 2.0, length(vPos.xz)) : smoothstep(fd.fog.x, fd.fog.y, dist));
     }
     outColor = vec4(col, alpha);
 }

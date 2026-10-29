@@ -35,6 +35,7 @@ DLSS libraries (upscaling and frame generation) next to the binary; without it t
 | E | Inventory: every block in creative; storage and crafting in survival |
 | F3 | Debug overlay |
 | F4 | Cycle lighting mode |
+| T or / | Chat and commands (Up/Down recalls earlier messages) |
 | F11 | Fullscreen |
 | Esc | Pause menu |
 
@@ -79,6 +80,8 @@ place them:
 - **Vertical slabs** sit against the face you click.
 - **Sideways stairs** stand upright, with the open corner facing you.
 - Placing a slab onto the open half of a matching slab fills the block in.
+- **Stairs connect** like the original game. A perpendicular stair behind one turns it into an outer corner, and one in
+  front makes an inner corner, unless that would break a straight run. Collision and the selection box follow the corner.
 
 You walk up slabs and stairs without jumping. Glass panes and stained panes join up with each other and with any
 full block next to them. Flowers can only be planted on grass or dirt.
@@ -135,12 +138,47 @@ vertex shader lowers them along a few sine waves in world space; lava moves slow
 the normal to match, so reflections and Fresnel ripple in the ray traced modes. Flat-lit water in Classic gets slope shading,
 and lava darkens in its troughs.
 
+## Clouds
+
+A layer of blocky 12×4×12 clouds floats at y=192 and drifts east. They're drawn as translucent boxes in every lighting
+mode, extend to twice the render distance (up to 384 blocks) and fade out by horizontal distance.
+
+## Commands and game rules
+
+Press T to chat, or / to start a command. Coordinates accept `~` for relative positions, and item and block names are their
+display names in lower case with underscores (`stone_stairs`, `red_stained_glass`, `food`).
+
+| Command | Effect |
+| --- | --- |
+| `/help` | List commands |
+| `/gamemode <survival\|creative>` | Switch game mode |
+| `/time set <day\|noon\|night\|midnight\|ticks>`, `/time add <ticks>`, `/time query` | Time of day, 24000 ticks per day |
+| `/tp <x> <y> <z>` | Teleport |
+| `/give <item> [count]` | Add items to your inventory |
+| `/setblock <x> <y> <z> <block>` | Place one block |
+| `/fill <x1> <y1> <z1> <x2> <y2> <z2> <block>` | Fill a box, up to 32768 blocks |
+| `/gamerule [rule] [true\|false]` | List, show or set a game rule |
+| `/spawnpoint`, `/kill`, `/clear`, `/seed` | Set spawn here, die, empty inventory, show the seed |
+
+Game rules are saved per world in `level.dat`:
+
+| Rule | Default | Effect |
+| --- | --- | --- |
+| `doDaylightCycle` | true | Time of day advances |
+| `keepInventory` | true | Keep your items when you die |
+| `fallDamage` | true | Falling hurts |
+| `fireDamage` | true | Lava hurts |
+| `naturalRegeneration` | true | Health regenerates when well fed |
+| `doTileDrops` | true | Broken blocks drop items |
+
 ## Layout
 
 - `src/world.*`: chunks, terrain generation, threaded lighting/meshing, chunk streaming and RLE save files
 - `src/renderer.*`, `src/vk_context.*`: Vulkan setup, chunk meshes, BLAS/TLAS management, frame graph
 - `src/dlss.*`: DLSS upscaling and frame generation through NVIDIA NGX (stubs when built without the SDK)
 - `src/particles.*`: block breaking particles
+- `src/clouds.*`: the cloud layer
+- `src/commands.cpp`: chat box, commands and game rules
 - `src/blocks.*`: block table, shapes (half-block cell masks), pane connections and collision boxes
 - `src/items.*`: inventory, item stacks and crafting recipes
 - `src/ui.*`, `src/game.*`: immediate-mode UI, screens, survival rules, saves and options
