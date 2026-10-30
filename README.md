@@ -66,6 +66,8 @@ list: click a recipe to make one.
 | 4 Stairs | 6 Planks, Log or Light |
 | Vertical Slab | Slab of the same material |
 | Sideways Stairs | Stairs of the same material |
+| 8 Panels | 1 Stone, Planks or Log |
+| Stone / Planks / Log | 8 matching Panels |
 
 Recipes live in `src/items.cpp`. The list shows what you can craft first and scrolls with the mouse wheel. Flowers grow
 in patches on grass; breaking one gives it to you. Caves below y=10 are filled with lava.
@@ -80,6 +82,10 @@ place them:
 - **Vertical slabs** sit against the face you click.
 - **Sideways stairs** stand upright, with the open corner facing you.
 - Placing a slab onto the open half of a matching slab fills the block in.
+- **Panels** (stone, planks and log) are 1/8 of a block thick, on the floor of a block or hanging from its ceiling
+  when you click the top half of a side or an underside. Clicking a panel's open face, or placing into its cell, with
+  the same panel makes it an eighth thicker; at eight eighths it becomes the full block. Breaking one gives back every
+  eighth.
 - **Stairs connect** like the original game. A perpendicular stair behind one turns it into an outer corner, and one in
   front makes an inner corner, unless that would break a straight run. Collision and the selection box follow the corner.
 
@@ -179,7 +185,7 @@ Game rules are saved per world in `level.dat`:
 - `src/particles.*`: block breaking particles
 - `src/clouds.*`: the cloud layer
 - `src/commands.cpp`: chat box, commands and game rules
-- `src/blocks.*`: block table, shapes (half-block cell masks), pane connections and collision boxes
+- `src/blocks.*`: block table, shapes (half-block cell masks), panels, pane connections and collision boxes
 - `src/items.*`: inventory, item stacks and crafting recipes
 - `src/ui.*`, `src/game.*`: immediate-mode UI, screens, survival rules, saves and options
 - `shaders/`: GLSL, compiled to SPIR-V at build time (`world_rt.frag.spv` is the ray query variant)

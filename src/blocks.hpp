@@ -4,6 +4,8 @@
 
 // Slabs, stairs, vertical slabs and sideways stairs come in every orientation for each of these materials.
 constexpr int SHAPE_MATERIALS = 9, SHAPE_STATES = 18;
+// Panels are 1/8 to 7/8 of a block thick, on the floor (states 0-6) or the ceiling (7-13) of their cell.
+constexpr int PANEL_MATERIALS = 3, PANEL_STATES = 14;
 
 enum Block : uint8_t {
     Air, Grass, Dirt, Stone, Sand, Planks, Log, Glass, Water,
@@ -13,7 +15,8 @@ enum Block : uint8_t {
     RedFlower, OrangeFlower, YellowFlower, GreenFlower, BlueFlower, PurpleFlower,
     GlassPane, RedStainedPane, OrangeStainedPane, YellowStainedPane, GreenStainedPane, PurpleStainedPane,
     ShapedBase,  // ShapedBase + material * SHAPE_STATES + state
-    BlockCount = ShapedBase + SHAPE_MATERIALS * SHAPE_STATES
+    PanelBase = ShapedBase + SHAPE_MATERIALS * SHAPE_STATES,  // PanelBase + material * PANEL_STATES + state
+    BlockCount = PanelBase + PANEL_MATERIALS * PANEL_STATES
 };
 
 enum BlockKind : uint8_t { KindOpaque, KindCutout, KindWater, KindTranslucent };
@@ -33,7 +36,7 @@ struct BlockInfo {
     uint8_t emit[3];  // RGB block light emission, 0..15
     float hardness;   // seconds to break in survival; < 0 can't be broken
     BlockModel model = ModelCube;
-    uint8_t mask = 0xFF;  // occupied half-block cells of a cube, bit x + 2z + 4y
+    uint8_t mask = 0xFF;  // occupied half-block cells of a cube, bit x + 2z + 4y (for panels, the fully covered ones)
 };
 
 struct Box { float lo[3], hi[3]; uint8_t skip = 0; };  // block-local units; skip: faces hidden inside the block
@@ -43,11 +46,16 @@ inline bool isLiquid(uint8_t b) { return b == Water || b == Lava; }
 inline bool isEmissive(uint8_t b) { const auto& e = blockInfo(b).emit; return e[0] | e[1] | e[2]; }
 inline bool isFlower(uint8_t b) { return b >= RedFlower && b <= PurpleFlower; }
 inline bool isPane(uint8_t b) { return b >= GlassPane && b <= PurpleStainedPane; }
-inline bool isShaped(uint8_t b) { return b >= ShapedBase && b < BlockCount; }
+inline bool isShaped(uint8_t b) { return b >= ShapedBase && b < PanelBase; }
+inline bool isPanel(uint8_t b) { return b >= PanelBase && b < BlockCount; }
+inline int panelEighths(uint8_t b) { return (b - PanelBase) % 7 + 1; }
+inline bool panelTop(uint8_t b) { return (b - PanelBase) % PANEL_STATES >= 7; }
 inline bool isPartial(uint8_t b) { return blockInfo(b).mask != 0xFF; }  // a shaped cube that doesn't fill its cell
 
 uint8_t shapedId(uint8_t material, int state);
 uint8_t shapeMaterial(uint8_t b);
+uint8_t panelId(uint8_t material, int eighths, bool top);  // a full block at 8 eighths; Air if it has no panels
+uint8_t panelMaterial(uint8_t b);
 // Light levels each RGB channel loses passing through b: stained glass filters out the colours it doesn't pass.
 const uint8_t* tintLoss(uint8_t b);
 int shapeState(uint8_t b);
@@ -93,6 +101,7 @@ template <class Get> uint8_t blockShape(uint8_t b, Get get, int x, int y, int z)
 int blockBoxes(uint8_t b, uint8_t shape, Box out[8]);  // selection and collision boxes
 
 extern const uint8_t kShapeMaterials[SHAPE_MATERIALS];  // full blocks that have shaped forms; append only (block ids)
+extern const uint8_t kPanelMaterials[PANEL_MATERIALS];  // likewise for panels
 const std::vector<uint8_t>& creativeItems();  // inventory layout
 extern const char* const kBlockTextures[];
 extern const int kBlockTextureCount;

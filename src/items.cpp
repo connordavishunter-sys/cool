@@ -70,6 +70,11 @@ const std::vector<Recipe>& recipes() {
             v.push_back({{stairs, 4}, {{m, 6}}});
             v.push_back({{itemOf(shapedId(m, 14)), 1}, {{stairs, 1}}});
         }
+        for (uint8_t m : kPanelMaterials) {
+            uint8_t panel = panelId(m, 1, false);
+            v.push_back({{panel, 8}, {{m, 1}}});
+            v.push_back({{m, 1}, {{panel, 8}}});
+        }
         return v;
     }();
     return list;

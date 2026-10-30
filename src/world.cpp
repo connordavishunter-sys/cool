@@ -326,6 +326,7 @@ struct Mesher {
                     bool emissive = isEmissive(b);
                     bool exposed = info.model == ModelCross ? (emitCross(out, x, y, z, b), true)
                                  : info.model == ModelPane  ? emitPane(out, x, y, z, b)
+                                 : isPanel(b)               ? emitPanel(out, x, y, z, b)
                                                             : emitCube(out, x, y, z, b, emissive);
                     if (!exposed) continue;
                     m.minY = std::min(m.minY, (float)y);
@@ -380,6 +381,39 @@ struct Mesher {
             }
         }
         return any;
+    }
+
+    // A panel is one box; its faces on the cell boundary are hidden where the neighbour covers them.
+    bool emitPanel(std::vector<Vertex>& out, int x, int y, int z, uint8_t b) {
+        Box boxes[8];
+        blockBoxes(b, 0, boxes);
+        const Box& bx = boxes[0];
+        bool any = false;
+        for (int f = 0; f < 6; ++f) {
+            const int* d = DIRS[f];
+            const int axis = f / 2;
+            const bool side = f % 2 == 0;
+            if ((side ? bx.hi[axis] == 1 : bx.lo[axis] == 0) && (y + d[1] < 0 || covered(bx, f, b, x + d[0], y + d[1], z + d[2]))) continue;
+            emitQuad(out, x, y, z, f, bx.lo, bx.hi, b, false, false, false);
+            any = true;
+        }
+        return any;
+    }
+    bool covered(const Box& bx, int f, uint8_t b, int nx, int ny, int nz) const {
+        const uint8_t nb = block(nx, ny, nz);
+        const int axis = f / 2;
+        if (blockInfo(nb).opaque) return true;
+        if (isPanel(nb)) return axis == 1 ? panelTop(nb) == (f == 3) : panelTop(nb) == panelTop(b) && panelEighths(nb) >= panelEighths(b);
+        if (!isPartial(nb)) return false;
+        const uint8_t m = cells(nb, nx, ny, nz);
+        for (int i = 0; i < 8; ++i) {  // every neighbour cell touching the face must be filled
+            const int c[3] = {i & 1, i >> 2, i >> 1 & 1};
+            bool touches = c[axis] == (f % 2);
+            for (int a = 0; a < 3; ++a)
+                if (a != axis) touches &= c[a] * 0.5f < bx.hi[a] && c[a] * 0.5f + 0.5f > bx.lo[a];
+            if (touches && !(m >> i & 1)) return false;
+        }
+        return true;
     }
 
     bool emitPane(std::vector<Vertex>& out, int x, int y, int z, uint8_t b) {

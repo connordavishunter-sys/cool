@@ -13,6 +13,7 @@ const char* const kBlockTextures[] = {
 const int kBlockTextureCount = sizeof(kBlockTextures) / sizeof(kBlockTextures[0]);
 
 const uint8_t kShapeMaterials[SHAPE_MATERIALS] = {Planks, Log, WhiteLight, RedLight, OrangeLight, YellowLight, BlueLight, PurpleLight, Stone};
+const uint8_t kPanelMaterials[PANEL_MATERIALS] = {Stone, Planks, Log};
 static const char* const kShapeNames[] = {"Slab", "Vertical Slab", "Stairs", "Sideways Stairs"};
 static const int kCanonicalState[] = {0, 5, 9, 17};  // the orientation shown in the inventory
 
@@ -81,6 +82,16 @@ static std::array<BlockInfo, BlockCount> buildBlocks() {
             b.opaque = false;
             b.mask = stateMask(s);
         }
+    static std::string panelNames[PANEL_MATERIALS];
+    for (int m = 0; m < PANEL_MATERIALS; ++m)
+        for (int s = 0; s < PANEL_STATES; ++s) {
+            panelNames[m] = std::string(kBase[kPanelMaterials[m]].name) + " Panel";
+            BlockInfo& b = t[PanelBase + m * PANEL_STATES + s];
+            b = kBase[kPanelMaterials[m]];
+            b.name = panelNames[m].c_str();
+            b.opaque = false;
+            b.mask = s % 7 >= 3 ? (s >= 7 ? 0xF0 : 0x0F) : 0;  // half the block or more covers a layer of cells
+        }
     return t;
 }
 static const std::array<BlockInfo, BlockCount> kBlocks = buildBlocks();
@@ -94,6 +105,12 @@ uint8_t shapedId(uint8_t material, int state) {
     return Air;
 }
 uint8_t shapeMaterial(uint8_t b) { return kShapeMaterials[(b - ShapedBase) / SHAPE_STATES]; }
+uint8_t panelId(uint8_t material, int eighths, bool top) {
+    for (int m = 0; m < PANEL_MATERIALS; ++m)
+        if (kPanelMaterials[m] == material) return eighths >= 8 ? material : (uint8_t)(PanelBase + m * PANEL_STATES + top * 7 + eighths - 1);
+    return Air;
+}
+uint8_t panelMaterial(uint8_t b) { return kPanelMaterials[(b - PanelBase) / PANEL_STATES]; }
 
 const uint8_t* tintLoss(uint8_t b) {
     // Matched to the textures' average colour; indexed by the stained glass texture layer (18-22).
@@ -102,7 +119,10 @@ const uint8_t* tintLoss(uint8_t b) {
     return loss[blockInfo(b).kind == KindTranslucent && t >= 1 && t <= 5 ? t : 0];
 }
 int shapeState(uint8_t b) { return (b - ShapedBase) % SHAPE_STATES; }
-uint8_t itemOf(uint8_t b) { return isShaped(b) ? shapedId(shapeMaterial(b), kCanonicalState[shapeOf(shapeState(b))]) : b; }
+uint8_t itemOf(uint8_t b) {
+    if (isPanel(b)) return panelId(panelMaterial(b), 1, false);
+    return isShaped(b) ? shapedId(shapeMaterial(b), kCanonicalState[shapeOf(shapeState(b))]) : b;
+}
 
 int blockBoxes(uint8_t b, uint8_t shape, Box out[8]) {
     const BlockInfo& info = blockInfo(b);
@@ -110,7 +130,10 @@ int blockBoxes(uint8_t b, uint8_t shape, Box out[8]) {
     auto add = [&](float x0, float y0, float z0, float x1, float y1, float z1, uint8_t skip = 0) {
         out[n++] = {{x0, y0, z0}, {x1, y1, z1}, skip};
     };
-    if (info.model == ModelCross) {
+    if (isPanel(b)) {
+        float h = panelEighths(b) / 8.0f;
+        panelTop(b) ? add(0, 1 - h, 0, 1, 1, 1) : add(0, 0, 0, 1, h, 1);
+    } else if (info.model == ModelCross) {
         add(0.25f, 0, 0.25f, 0.75f, 0.85f, 0.75f);
     } else if (info.model == ModelPane) {
         // A bar along X through the middle, plus separate arms along Z; a lone pane is a cross.
@@ -145,10 +168,13 @@ const std::vector<uint8_t>& creativeItems() {
             GlassPane, RedStainedPane, OrangeStainedPane, YellowStainedPane, GreenStainedPane, PurpleStainedPane,
             WhiteLight, RedLight, OrangeLight, YellowLight, BlueLight, PurpleLight,
         };
-        for (bool lights : {false, true})  // building materials first, then the lights
+        for (bool lights : {false, true}) {  // building materials and panels first, then the lights
             for (uint8_t m : kShapeMaterials)
                 if (isEmissive(m) == lights)
                     for (int s : kCanonicalState) v.push_back(shapedId(m, s));
+            if (!lights)
+                for (uint8_t m : kPanelMaterials) v.push_back(panelId(m, 1, false));
+        }
         return v;
     }();
     return items;

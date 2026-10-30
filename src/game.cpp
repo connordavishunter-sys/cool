@@ -473,9 +473,12 @@ void Game::interact(bool destroy) {
     }
     if (item.empty() || !isBlockItem(item.id)) return;
 
-    // Clicking the open side of a slab with the same slab fills the block in.
+    // Clicking the open face of a panel with a panel of the same material makes it an eighth thicker, and the
+    // open side of a slab with the same slab fills the block in.
     glm::ivec3 p = hit.block;
     uint8_t target = world->get(p.x, p.y, p.z), b = Air;
+    if (isPanel(target) && isPanel(item.id) && panelMaterial(target) == panelMaterial(item.id) && hit.normal.y == (panelTop(target) ? -1 : 1))
+        b = panelId(panelMaterial(target), panelEighths(target) + 1, panelTop(target));
     if (isShaped(target) && isShaped(item.id) && shapeMaterial(target) == shapeMaterial(item.id) &&
         shapeOf(shapeState(target)) == shapeOf(shapeState(item.id)) && shapeOf(shapeState(target)) <= ShapeVSlab) {
         static const uint8_t halves[3][2] = {{0xAA, 0x55}, {0xF0, 0x0F}, {0xCC, 0x33}};  // +/- half per axis
@@ -489,6 +492,8 @@ void Game::interact(bool destroy) {
         bool fills = isShaped(existing) && isShaped(b) && shapeMaterial(existing) == shapeMaterial(b) &&
                      (blockInfo(existing).mask ^ blockInfo(b).mask) == 0xFF;
         if (fills) b = shapeMaterial(b);
+        else if (isPanel(existing) && isPanel(b) && panelMaterial(existing) == panelMaterial(b))
+            b = panelId(panelMaterial(b), panelEighths(existing) + 1, panelTop(existing));
         else if (existing != Air && !isLiquid(existing)) return;
     }
     if (p.y < 0 || p.y >= CH) return;
@@ -503,10 +508,11 @@ void Game::interact(bool destroy) {
 // on the top half of a face, stairs climb away from the player, vertical slabs sit against the clicked face
 // and sideways stairs open towards the player.
 uint8_t Game::orient(uint8_t item, const RayHit& hit) const {
-    if (!isShaped(item)) return item;
-    glm::vec3 look = player.look();
     double fy = hit.point.y - std::floor(hit.point.y);
     bool upper = hit.normal.y < 0 || (hit.normal.y == 0 && fy > 0.5);
+    if (isPanel(item)) return panelId(panelMaterial(item), 1, upper);
+    if (!isShaped(item)) return item;
+    glm::vec3 look = player.look();
     int facing = std::abs(look.x) > std::abs(look.z) ? (look.x > 0 ? 0 : 1) : (look.z > 0 ? 2 : 3);
     int against = hit.normal.x ? (hit.normal.x > 0 ? 1 : 0) : (hit.normal.z > 0 ? 3 : 2);
     int state = 0;
@@ -529,7 +535,7 @@ void Game::breakBlock(glm::ivec3 p) {
     }
     worldEdited = true;
     if (!survival() || !meta.rules.doTileDrops) return;
-    meta.inv.add(b == Grass ? (uint8_t)Dirt : itemOf(b), 1);  // whatever doesn't fit is lost
+    meta.inv.add(b == Grass ? (uint8_t)Dirt : itemOf(b), isPanel(b) ? panelEighths(b) : 1);  // whatever doesn't fit is lost
     if (isFlower(above)) meta.inv.add(above, 1);
     if (b == Leaves && rng() % 6 == 0) meta.inv.add(ItemFood, 1);
     meta.exhaustion += 0.005f;
