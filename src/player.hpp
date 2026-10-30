@@ -16,7 +16,7 @@ struct Player {
     glm::dvec3 eye() const { return pos + glm::dvec3(0, EYE, 0); }
     glm::vec3 look() const;
     void update(const World& world, const uint8_t* keys, double dt);
-    bool intersects(const World& world, glm::ivec3 p, uint8_t b) const;  // would block b at p overlap the player
+    bool intersects(const World& world, glm::ivec3 p, BlockId b) const;  // would block b at p overlap the player
 
 private:
     bool hitWall = false;  // ran into something horizontally this update

@@ -1,0 +1,25 @@
+#version 460
+// Camera motion per pixel for TAA and DLSS: how far, in render pixels, each surface moved since last frame (current to previous).
+// The world is static, so reprojecting the depth buffer is enough.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D depthTex;
+layout(set = 0, binding = 3, rg16f) uniform writeonly image2D motionOut;
+
+layout(push_constant) uniform PC {
+    mat4 reproject;  // current jittered NDC -> previous unjittered clip space
+    vec4 jitter;     // xy: this frame's jitter in pixels
+} pc;
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = textureSize(depthTex, 0);
+    if (any(greaterThanEqual(px, size))) return;
+
+    vec2 uv = (vec2(px) + 0.5) / vec2(size);
+    vec4 prev = pc.reproject * vec4(uv * 2.0 - 1.0, texelFetch(depthTex, px, 0).r, 1.0);  // depth 0 (sky) reprojects as a direction
+    vec2 prevUV = prev.xy / prev.w * 0.5 + 0.5;
+    vec2 curUV = uv - pc.jitter.xy / vec2(size);  // where the surface sits without jitter
+    imageStore(motionOut, px, vec4((prevUV - curUV) * vec2(size), 0.0, 0.0));
+}

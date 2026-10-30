@@ -1,5 +1,7 @@
 #include "vk_context.hpp"
 
+#include "dlss.hpp"
+
 #include <SDL2/SDL_vulkan.h>
 
 #include <algorithm>
@@ -31,6 +33,16 @@ void VkCtx::init(SDL_Window* w) {
     SDL_Vulkan_GetInstanceExtensions(w, &extCount, nullptr);
     std::vector<const char*> instExts(extCount);
     SDL_Vulkan_GetInstanceExtensions(w, &extCount, instExts.data());
+    std::vector<const char*> dlssInst, dlssDev;
+    Dlss::requiredExtensions(dlssInst, dlssDev);
+    uint32_t n = 0;
+    vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
+    std::vector<VkExtensionProperties> available(n);
+    vkEnumerateInstanceExtensionProperties(nullptr, &n, available.data());
+    for (const char* e : dlssInst)
+        if (std::any_of(available.begin(), available.end(), [&](auto& a) { return !std::strcmp(a.extensionName, e); }) &&
+            std::none_of(instExts.begin(), instExts.end(), [&](const char* x) { return !std::strcmp(x, e); }))
+            instExts.push_back(e);
 
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "Ordis";
@@ -103,6 +115,9 @@ void VkCtx::init(SDL_Window* w) {
 
     std::vector<const char*> devExts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     if (rtSupported) devExts.insert(devExts.end(), rtExts.begin(), rtExts.end());
+    for (const char* e : dlssDev)
+        if (hasExtensions(gpu, {e}) && std::none_of(devExts.begin(), devExts.end(), [&](const char* x) { return !std::strcmp(x, e); }))
+            devExts.push_back(e);
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     qci.queueFamilyIndex = queueFamily;
@@ -179,7 +194,7 @@ void VkCtx::createSwapchain() {
     sci.imageColorSpace = fmt.colorSpace;
     sci.imageExtent = swapExtent;
     sci.imageArrayLayers = 1;
-    sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     sci.preTransform = caps.currentTransform;
     sci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     sci.presentMode = mode;
@@ -257,11 +272,12 @@ void VkCtx::destroyBuffer(Buffer& b) {
 }
 
 Image VkCtx::createImage(uint32_t w, uint32_t h, VkFormat format, VkImageUsageFlags usage, uint32_t mips, uint32_t layers,
-                         VkImageAspectFlags aspect, bool array) {
+                         VkImageAspectFlags aspect, bool array, VkImageCreateFlags flags) {
     Image img;
     img.format = format;
     img.width = w; img.height = h; img.mips = mips; img.layers = layers;
     VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ici.flags = flags;
     ici.imageType = VK_IMAGE_TYPE_2D;
     ici.format = format;
     ici.extent = {w, h, 1};
@@ -309,6 +325,7 @@ void VkCtx::submitNow(const std::function<void(VkCommandBuffer)>& record) {
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;
+    std::lock_guard lock(queueMutex);
     VK_CHECK(vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE));
     vkQueueWaitIdle(queue);
     vkFreeCommandBuffers(device, cmdPool, 1, &cmd);

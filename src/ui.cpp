@@ -109,7 +109,7 @@ void Ui::tiledBackground(int layer, float brightness) {
 }
 
 // Isometric cube: top, left (+Z) and right (+X) faces.
-void Ui::blockIcon(uint8_t block, float cx, float cy, float size) {
+void Ui::blockIcon(BlockId block, float cx, float cy, float size) {
     if (block == ItemFood) {
         float s = size * 0.8f;
         image(TexHunger, cx - s / 2, cy - s / 2, s, s);
@@ -127,10 +127,12 @@ void Ui::blockIcon(uint8_t block, float cx, float cy, float size) {
     auto at = [&](float* out, float x, float y, float z) { out[0] = ox + (x - z) * a; out[1] = oy + (x + z) * b - y * h; };
     bool glow = isEmissive(block);
     static const int order[8] = {0, 1, 2, 4, 3, 5, 6, 7};
+    const bool whole = info.mask == 0xFF || isPanel(block);  // drawn as one box
     for (int i : order) {
-        if (!(info.mask >> i & 1)) continue;
-        float c = info.mask == 0xFF ? 1 : 0.5f;
+        if (!whole && !(info.mask >> i & 1)) continue;
+        float c = whole ? 1 : 0.5f;
         float x0 = (i & 1) * c, z0 = (i >> 1 & 1) * c, y0 = (i >> 2) * c, x1 = x0 + c, y1 = y0 + c, z1 = z0 + c;
+        if (isPanel(block)) y1 = panelEighths(block) / 8.0f;
         float pt[8], pl[8], pr[8];
         at(pt, x0, y1, z0); at(pt + 2, x1, y1, z0); at(pt + 4, x1, y1, z1); at(pt + 6, x0, y1, z1);
         at(pl, x0, y1, z1); at(pl + 2, x1, y1, z1); at(pl + 4, x1, y0, z1); at(pl + 6, x0, y0, z1);
@@ -141,7 +143,7 @@ void Ui::blockIcon(uint8_t block, float cx, float cy, float size) {
         batch.quad(-1, pt, ut, info.tex[2], WHITE);
         batch.quad(-1, pl, ul, info.tex[4], glow ? WHITE : rgba(200, 200, 200));
         batch.quad(-1, pr, ur, info.tex[0], glow ? WHITE : rgba(150, 150, 150));
-        if (info.mask == 0xFF) break;
+        if (whole) break;
     }
 }
 

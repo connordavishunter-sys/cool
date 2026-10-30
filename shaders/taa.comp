@@ -1,0 +1,68 @@
+#version 460
+// Temporal anti-aliasing: blends the jittered current frame into reprojected history, clipping the history to the
+// current neighbourhood's colour range so moving edges don't ghost.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 1) uniform sampler2D hdrTex;
+layout(set = 0, binding = 2) uniform sampler2D accumTex;
+layout(set = 0, binding = 3, rg16f) uniform readonly image2D motion;
+layout(set = 0, binding = 4) uniform sampler2D histIn;
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D histOut;
+
+layout(push_constant) uniform PC {
+    mat4 reproject;
+    vec4 jitter;  // z: read the path tracer's accumulation, w: reset history
+} pc;
+
+const float FEEDBACK = 0.1;
+
+// Reversible tonemap so a few very bright pixels don't dominate the blend.
+vec3 compress(vec3 c) { return c / (1.0 + max(c.r, max(c.g, c.b))); }
+vec3 expand(vec3 c) { return c / max(1.0 - max(c.r, max(c.g, c.b)), 1e-4); }
+vec3 toYCoCg(vec3 c) { return vec3(dot(c, vec3(0.25, 0.5, 0.25)), dot(c, vec3(0.5, 0.0, -0.5)), dot(c, vec3(-0.25, 0.5, -0.25))); }
+vec3 fromYCoCg(vec3 c) { return vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z); }
+
+vec3 current(ivec2 p) {
+    p = clamp(p, ivec2(0), textureSize(hdrTex, 0) - 1);
+    return compress(pc.jitter.z > 0.5 ? texelFetch(accumTex, p, 0).rgb : texelFetch(hdrTex, p, 0).rgb);
+}
+
+// 5-tap Catmull-Rom, sharper than bilinear so the history doesn't blur over time.
+vec3 history(vec2 uv) {
+    vec2 size = vec2(textureSize(histIn, 0)), pos = uv * size, c = floor(pos - 0.5) + 0.5, f = pos - c;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f)), w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2, t0 = (c - 1.0) / size, t3 = (c + 2.0) / size, t12 = (c + w2 / w12) / size;
+    vec3 r = texture(histIn, vec2(t12.x, t0.y)).rgb * w12.x * w0.y + texture(histIn, vec2(t0.x, t12.y)).rgb * w0.x * w12.y +
+             texture(histIn, t12).rgb * w12.x * w12.y + texture(histIn, vec2(t3.x, t12.y)).rgb * w3.x * w12.y +
+             texture(histIn, vec2(t12.x, t3.y)).rgb * w12.x * w3.y;
+    float w = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
+    return compress(max(r / w, 0.0));
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(histOut);
+    if (any(greaterThanEqual(px, size))) return;
+
+    vec3 cur = current(px), m1 = vec3(0.0), m2 = vec3(0.0);
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x) {
+            vec3 c = toYCoCg(current(px + ivec2(x, y)));
+            m1 += c;
+            m2 += c * c;
+        }
+    // History holds unjittered pixel centres, so it's fetched where this pixel's centre was last frame.
+    vec2 prevUV = (vec2(px) + 0.5 + imageLoad(motion, px).xy) / vec2(size);
+    vec3 result = cur;
+    if (pc.jitter.w < 0.5 && all(greaterThanEqual(prevUV, vec2(0.0))) && all(lessThanEqual(prevUV, vec2(1.0)))) {
+        vec3 mu = m1 / 9.0, sigma = sqrt(max(m2 / 9.0 - mu * mu, 0.0)) * 1.25;
+        vec3 h = toYCoCg(history(prevUV)), d = h - mu;
+        vec3 t = abs(d) / max(sigma, 1e-5);
+        float s = max(t.x, max(t.y, t.z));
+        if (s > 1.0) h = mu + d / s;  // clip towards the neighbourhood's mean
+        result = mix(fromYCoCg(h), cur, FEEDBACK);
+    }
+    imageStore(histOut, px, vec4(expand(result), 1.0));
+}

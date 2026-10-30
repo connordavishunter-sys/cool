@@ -27,19 +27,19 @@ inline int floorDiv(int a, int b) { return (a >= 0 ? a : a - b + 1) / b; }
 
 struct Chunk {
     int cx = 0, cz = 0;
-    std::array<uint8_t, CVOL> blocks{};
+    std::array<BlockId, CVOL> blocks{};
     bool needsSave = false;   // edited since last written to disk
     bool meshDirty = true;
     bool urgent = false;      // remesh with priority (player edit)
     bool meshing = false;
 
     static int index(int x, int y, int z) { return (y * CW + z) * CW + x; }
-    uint8_t get(int x, int y, int z) const { return blocks[index(x, y, z)]; }
+    BlockId get(int x, int y, int z) const { return blocks[index(x, y, z)]; }
 };
 
 struct Vertex {
     float x, y, z;
-    uint32_t packed;  // normal:3 layer:8 unused:2 ao:2 emissive:1 kind:2 u:5 v:5 (uv in 16ths)
+    uint32_t packed;  // normal:3 layer:8 wave:1 cloud:1 ao:2 emissive:1 kind:2 u:5 v:5 (uv in 16ths)
     uint32_t light;   // sky, r, g, b as unorm8
 };
 
@@ -86,8 +86,8 @@ public:
     // Streams chunks around the given chunk coordinate; call once per frame.
     void update(int pcx, int pcz, int renderDist);
 
-    uint8_t get(int x, int y, int z) const;
-    void set(int x, int y, int z, uint8_t b);
+    BlockId get(int x, int y, int z) const;
+    void set(int x, int y, int z, BlockId b);
     bool isLoaded(int x, int z) const;
     bool isMeshed(int cx, int cz) const;
     int topBlock(int x, int z) const;  // y of highest non-air block, -1 if none

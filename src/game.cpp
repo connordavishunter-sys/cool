@@ -17,6 +17,7 @@
 namespace fs = std::filesystem;
 
 static const char* kLightingNames[LightModeCount] = {"Classic", "Ray Traced", "Path Traced"};
+static const char* kAaNames[AaCount] = {"Off", "FXAA", "TAA", "DLAA", "DLSS Quality", "DLSS Balanced", "DLSS Performance", "DLSS Ultra Performance"};
 static const char* kTracks[] = {"a_new_beginning", "crashing_waves", "endless_possibilites", "land_of_oppertunitues"};
 
 // ---------------------------------------------------------------- key=value files
@@ -51,6 +52,23 @@ void Game::loadOptions() {
     readValue(kv, "music", opts.music);
     readValue(kv, "vsync", opts.vsync);
     readValue(kv, "brightness", opts.brightness);
+    readValue(kv, "antialiasing", opts.aa);
+    readValue(kv, "frameGeneration", opts.frameGen);
+    RtSettings& rt = opts.rt;
+    readValue(kv, "rtShadowRays", rt.shadowRays);
+    readValue(kv, "rtSunSoftness", rt.rtSunSoftness);
+    readValue(kv, "rtAmbient", rt.ambient);
+    readValue(kv, "rtReflections", rt.reflections);
+    readValue(kv, "ptBounces", rt.bounces);
+    readValue(kv, "ptSamples", rt.samples);
+    readValue(kv, "ptHistory", rt.history);
+    readValue(kv, "ptSunSoftness", rt.ptSunSoftness);
+    readValue(kv, "lightStrength", rt.lightStrength);
+    rt.shadowRays = std::clamp(rt.shadowRays, 0, 32);
+    rt.bounces = std::clamp(rt.bounces, 0, 6);
+    rt.samples = std::clamp(rt.samples, 1, 8);
+    rt.history = std::clamp(rt.history, 1, 256);
+    opts.aa = std::clamp(opts.aa, 0, AaCount - 1);
     opts.brightness = std::clamp(opts.brightness, 0.0f, 1.0f);
     opts.lighting = std::clamp(opts.lighting, 0, LightModeCount - 1);
     opts.renderDist = std::clamp(opts.renderDist, 2, 24);
@@ -60,7 +78,12 @@ void Game::loadOptions() {
 void Game::saveOptions() const {
     std::ofstream f(base / "options.txt");
     f << "lighting=" << opts.lighting << "\nrenderDistance=" << opts.renderDist << "\nfov=" << opts.fov
-      << "\nrenderScale=" << opts.renderScale << "\nsensitivity=" << opts.sensitivity << "\nmusic=" << opts.music << "\nvsync=" << opts.vsync << "\nbrightness=" << opts.brightness << "\n";
+      << "\nrenderScale=" << opts.renderScale << "\nsensitivity=" << opts.sensitivity << "\nmusic=" << opts.music << "\nvsync=" << opts.vsync << "\nbrightness=" << opts.brightness
+      << "\nantialiasing=" << opts.aa << "\nframeGeneration=" << opts.frameGen;
+    const RtSettings& rt = opts.rt;
+    f << "\nrtShadowRays=" << rt.shadowRays << "\nrtSunSoftness=" << rt.rtSunSoftness << "\nrtAmbient=" << rt.ambient
+      << "\nrtReflections=" << rt.reflections << "\nptBounces=" << rt.bounces << "\nptSamples=" << rt.samples << "\nptHistory=" << rt.history
+      << "\nptSunSoftness=" << rt.ptSunSoftness << "\nlightStrength=" << rt.lightStrength << "\n";
 }
 
 static WorldMeta readMeta(const fs::path& dir) {
@@ -87,21 +110,27 @@ static WorldMeta readMeta(const fs::path& dir) {
     readValue(kv, "spawnX", m.spawn.x);
     readValue(kv, "spawnY", m.spawn.y);
     readValue(kv, "spawnZ", m.spawn.z);
-    auto valid = [](int id) { return isBlockItem((uint8_t)id) || id == ItemFood; };
+    for (const auto& r : kGameRules) readValue(kv, (std::string("rule.") + r.name).c_str(), m.rules.*r.value);
+    auto valid = [](int id) { return isBlockItem((BlockId)id) || id == ItemFood; };
+    const bool wideIds = kv.count("ids");  // saves without it stored 8-bit ids
+    auto upgrade = [&](int id) {
+        if (wideIds || id < 0 || id > 255) return id;
+        return id == OLD_FOOD ? (int)ItemFood : (int)fromLegacyId((uint8_t)id);
+    };
     if (bool legacy = !kv.count("items"); !legacy || kv.count("inventory")) {
         std::istringstream ss(kv[legacy ? "inventory" : "items"]);
         int id, n;
         char colon;
         for (auto& s : m.inv.slots) {
             if (!(ss >> id >> colon >> n)) break;
-            if (legacy && id == LEGACY_FOOD) id = ItemFood;
-            if (valid(id) && n > 0) s = {(uint8_t)id, (uint8_t)std::min(n, STACK_MAX)};
+            id = legacy && id == LEGACY_FOOD ? (int)ItemFood : upgrade(id);
+            if (valid(id) && n > 0) s = {(BlockId)id, (uint8_t)std::min(n, STACK_MAX)};
         }
     } else if (kv.count("hotbar")) {  // older saves only had a creative hotbar
         std::istringstream ss(kv["hotbar"]);
         int id;
         for (int i = 0; i < 9 && ss >> id; ++i)
-            if (valid(id)) m.inv.slots[i] = {(uint8_t)id, 1};
+            if (valid(id = upgrade(id))) m.inv.slots[i] = {(BlockId)id, 1};
     }
     m.slot = std::clamp(m.slot, 0, 8);
     m.mode = m.mode == Survival ? Survival : Creative;
@@ -115,7 +144,9 @@ static void writeMeta(const fs::path& dir, const WorldMeta& m) {
       << "\nx=" << m.pos.x << "\ny=" << m.pos.y << "\nz=" << m.pos.z << "\nyaw=" << m.yaw << "\npitch=" << m.pitch
       << "\nflying=" << m.flying << "\ntime=" << m.time << "\nslot=" << m.slot << "\nmode=" << m.mode
       << "\nhealth=" << m.health << "\nhunger=" << m.hunger << "\nsaturation=" << m.saturation << "\nexhaustion=" << m.exhaustion
-      << "\nspawnX=" << m.spawn.x << "\nspawnY=" << m.spawn.y << "\nspawnZ=" << m.spawn.z << "\nitems=";
+      << "\nspawnX=" << m.spawn.x << "\nspawnY=" << m.spawn.y << "\nspawnZ=" << m.spawn.z;
+    for (const auto& r : kGameRules) f << "\nrule." << r.name << '=' << m.rules.*r.value;
+    f << "\nids=16\nitems=";
     for (const auto& s : m.inv.slots) f << (int)s.id << ':' << (int)s.count << ' ';
     f << "\n";
 }
@@ -142,6 +173,8 @@ Game::Game() {
     vk.init(window);
     renderer.init(vk, base.string() + "/", ui.font);
     if (!vk.rtSupported) opts.lighting = LightClassic;
+    if (isDlss(opts.aa) && !renderer.dlssAvailable()) opts.aa = AaTaa;
+    opts.frameGen = opts.frameGen && renderer.frameGenAvailable();
 
     if (Mix_OpenAudio(48000, AUDIO_S16SYS, 2, 4096) == 0) {
         for (const char* t : kTracks)
@@ -167,7 +200,7 @@ Game::~Game() {
 void Game::setScreen(Screen s) {
     screen = s;
     SDL_SetRelativeMouseMode(s == Screen::Playing ? SDL_TRUE : SDL_FALSE);
-    if (s == Screen::CreateWorld) SDL_StartTextInput();
+    if (s == Screen::CreateWorld || s == Screen::Chat) SDL_StartTextInput();
     else SDL_StopTextInput();
     mouseLeft = mouseRight = false;
 }
@@ -186,7 +219,7 @@ void Game::createWorld() {
     m.name = newName.empty() ? "New World" : newName;
     m.mode = newMode;
     if (m.mode == Creative) {
-        const uint8_t hotbar[9] = {Grass, Dirt, Stone, Sand, Planks, Log, Glass, Water, WhiteLight};
+        const BlockId hotbar[9] = {Grass, Dirt, Stone, Sand, Planks, Log, Glass, Water, WhiteLight};
         for (int i = 0; i < 9; ++i) m.inv.slots[i] = {hotbar[i], 1};
     }
 
@@ -234,6 +267,9 @@ void Game::openWorld(const WorldMeta& m) {
     }
     fallStart = player.pos.y;
     breakProgress = 0;
+    particles.clear();
+    clouds = std::make_unique<Clouds>(meta.seed);
+    chat.clear();
     held = {};
     loadingStart = now;
     autosaveTimer = 0;
@@ -292,19 +328,22 @@ void Game::run() {
         case Screen::CreateWorld: drawCreateWorld(); break;
         case Screen::ConfirmDelete: drawConfirmDelete(); break;
         case Screen::Options:
+        case Screen::RayTracing:
             if (optionsReturn == Screen::Paused) { drawHud(); ui.fill(0, 0, ui.width, ui.height, rgba(10, 10, 20, 150)); }
-            drawOptions();
+            if (screen == Screen::Options) drawOptions();
+            else drawRayTracing();
             break;
         case Screen::Loading: drawLoading(); break;
         case Screen::Playing: drawHud(); break;
         case Screen::Paused: drawHud(); drawPause(); break;
         case Screen::Inventory: drawHud(); drawInventory(); break;
         case Screen::Dead: drawHud(); drawDeath(); break;
+        case Screen::Chat: drawHud(); drawChat(true); break;
         }
 
         SceneParams sp;
         sp.inWorld = world && screen != Screen::Loading && (screen == Screen::Playing || screen == Screen::Paused ||
-                                                             screen == Screen::Inventory || screen == Screen::Dead ||
+                                                             screen == Screen::Inventory || screen == Screen::Dead || screen == Screen::Chat ||
                                                              optionsReturn == Screen::Paused);
         if (sp.inWorld) {
             sp.camPos = player.eye();
@@ -317,6 +356,8 @@ void Game::run() {
             sp.renderDist = opts.renderDist;
             sp.underwater = world->get((int)std::floor(sp.camPos.x), (int)std::floor(sp.camPos.y), (int)std::floor(sp.camPos.z)) == Water;
             sp.resetAccumulation = worldEdited;
+            sp.particles = &particles.mesh(sp.camPos, sp.yaw, sp.pitch);
+            sp.clouds = &clouds->mesh(sp.camPos, now, std::min(opts.renderDist * 32.0, 384.0));
             RayHit hit;
             if (screen == Screen::Playing && raycast(*world, player.eye(), glm::dvec3(player.look()), reach(), hit)) {
                 sp.hasSelection = true;
@@ -325,6 +366,9 @@ void Game::run() {
         }
         sp.renderScale = opts.renderScale;
         sp.brightness = opts.brightness;
+        sp.aa = opts.aa;
+        sp.frameGen = opts.frameGen;
+        sp.rt = opts.rt;
         vk.vsync = opts.vsync;
         worldEdited = false;
         renderer.render(sp, ui.batch);
@@ -347,7 +391,7 @@ void Game::handleEvent(const SDL_Event& e, UiInput& in) {
             if (e.button.button == SDL_BUTTON_MIDDLE) {
                 RayHit hit;
                 if (raycast(*world, player.eye(), glm::dvec3(player.look()), reach(), hit)) {
-                    uint8_t b = itemOf(world->get(hit.block.x, hit.block.y, hit.block.z));
+                    BlockId b = itemOf(world->get(hit.block.x, hit.block.y, hit.block.z));
                     if (!survival()) meta.inv.slots[meta.slot] = {b, 1};
                     for (int i = 0; i < 9 && survival(); ++i)
                         if (meta.inv.slots[i].id == b) { meta.slot = i; break; }
@@ -374,7 +418,10 @@ void Game::handleEvent(const SDL_Event& e, UiInput& in) {
             player.pitch = std::clamp(player.pitch - e.motion.yrel * s, -1.5605f, 1.5605f);
         }
         break;
-    case SDL_TEXTINPUT: in.text += e.text.text; break;
+    case SDL_TEXTINPUT:
+        if (swallowText && now - chatOpenedAt < 0.1) { swallowText = false; break; }  // the key that opened the chat
+        in.text += e.text.text;
+        break;
     case SDL_KEYDOWN: {
         SDL_Keycode k = e.key.keysym.sym;
         if (k == SDLK_BACKSPACE) in.backspace = true;
@@ -389,6 +436,8 @@ void Game::handleEvent(const SDL_Event& e, UiInput& in) {
         if (screen == Screen::Playing) {
             if (k == SDLK_ESCAPE) setScreen(Screen::Paused);
             else if (k == SDLK_e) setScreen(Screen::Inventory);
+            else if (k == SDLK_t) openChat("");
+            else if (k == SDLK_SLASH) openChat("/");
             else if (k == SDLK_F3) showDebug = !showDebug;
             else if (k == SDLK_F4 && vk.rtSupported) opts.lighting = (opts.lighting + 1) % LightModeCount;
             else if (k >= SDLK_1 && k <= SDLK_9) { meta.slot = k - SDLK_1; slotChangedAt = now; }
@@ -398,6 +447,12 @@ void Game::handleEvent(const SDL_Event& e, UiInput& in) {
             }
         } else if (screen == Screen::Inventory && (k == SDLK_e || k == SDLK_ESCAPE)) {
             closeInventory();
+        } else if (screen == Screen::Chat) {
+            if (k == SDLK_ESCAPE) setScreen(Screen::Playing);
+            if ((k == SDLK_UP || k == SDLK_DOWN) && !sent.empty()) {
+                sentPos = k == SDLK_UP ? (sentPos > 0 ? sentPos - 1 : 0) : std::min(sentPos + 1, sent.size());
+                chatInput = sentPos < sent.size() ? sent[sentPos] : "";
+            }
         } else if (screen == Screen::Paused && k == SDLK_ESCAPE) {
             setScreen(Screen::Playing);
         }
@@ -405,6 +460,9 @@ void Game::handleEvent(const SDL_Event& e, UiInput& in) {
     }
     }
 }
+
+// The index of the face (+X, -X, +Y, -Y, +Z, -Z) a unit normal points out of.
+static int faceOf(glm::ivec3 n) { return n.x ? (n.x < 0) : n.y ? 2 + (n.y < 0) : 4 + (n.z < 0); }
 
 void Game::interact(bool destroy) {
     ItemStack& item = meta.inv.slots[meta.slot];
@@ -423,9 +481,12 @@ void Game::interact(bool destroy) {
     }
     if (item.empty() || !isBlockItem(item.id)) return;
 
-    // Clicking the open side of a slab with the same slab fills the block in.
+    // Clicking the open face of a panel with a panel of the same material makes it an eighth thicker, and the
+    // open side of a slab with the same slab fills the block in.
     glm::ivec3 p = hit.block;
-    uint8_t target = world->get(p.x, p.y, p.z), b = Air;
+    BlockId target = world->get(p.x, p.y, p.z), b = Air;
+    if (isPanel(target) && isPanel(item.id) && panelMaterial(target) == panelMaterial(item.id) && faceOf(hit.normal) == (panelFace(target) ^ 1))
+        b = panelId(panelMaterial(target), panelEighths(target) + 1, panelFace(target));
     if (isShaped(target) && isShaped(item.id) && shapeMaterial(target) == shapeMaterial(item.id) &&
         shapeOf(shapeState(target)) == shapeOf(shapeState(item.id)) && shapeOf(shapeState(target)) <= ShapeVSlab) {
         static const uint8_t halves[3][2] = {{0xAA, 0x55}, {0xF0, 0x0F}, {0xCC, 0x33}};  // +/- half per axis
@@ -435,10 +496,12 @@ void Game::interact(bool destroy) {
     if (b == Air) {
         p += hit.normal;
         b = orient(item.id, hit);
-        uint8_t existing = world->get(p.x, p.y, p.z);
+        BlockId existing = world->get(p.x, p.y, p.z);
         bool fills = isShaped(existing) && isShaped(b) && shapeMaterial(existing) == shapeMaterial(b) &&
                      (blockInfo(existing).mask ^ blockInfo(b).mask) == 0xFF;
         if (fills) b = shapeMaterial(b);
+        else if (isPanel(existing) && isPanel(b) && panelMaterial(existing) == panelMaterial(b))
+            b = panelId(panelMaterial(b), panelEighths(existing) + 1, panelFace(existing));
         else if (existing != Air && !isLiquid(existing)) return;
     }
     if (p.y < 0 || p.y >= CH) return;
@@ -450,9 +513,10 @@ void Game::interact(bool destroy) {
 }
 
 // Turns a shaped item into the oriented block placed against the hit face: slabs and stairs go upside down
-// on the top half of a face, stairs climb away from the player, vertical slabs sit against the clicked face
-// and sideways stairs open towards the player.
-uint8_t Game::orient(uint8_t item, const RayHit& hit) const {
+// on the top half of a face, stairs climb away from the player, vertical slabs and panels sit against the clicked
+// face and sideways stairs open towards the player.
+BlockId Game::orient(BlockId item, const RayHit& hit) const {
+    if (isPanel(item)) return panelId(panelMaterial(item), 1, faceOf(hit.normal) ^ 1);
     if (!isShaped(item)) return item;
     glm::vec3 look = player.look();
     double fy = hit.point.y - std::floor(hit.point.y);
@@ -470,12 +534,16 @@ uint8_t Game::orient(uint8_t item, const RayHit& hit) const {
 }
 
 void Game::breakBlock(glm::ivec3 p) {
-    uint8_t b = world->get(p.x, p.y, p.z), above = world->get(p.x, p.y + 1, p.z);
+    BlockId b = world->get(p.x, p.y, p.z), above = world->get(p.x, p.y + 1, p.z);
     world->set(p.x, p.y, p.z, Air);
-    if (isFlower(above)) world->set(p.x, p.y + 1, p.z, Air);  // lost its footing
+    particles.burst(*world, p, b);
+    if (isFlower(above)) {  // lost its footing
+        world->set(p.x, p.y + 1, p.z, Air);
+        particles.burst(*world, p + glm::ivec3(0, 1, 0), above);
+    }
     worldEdited = true;
-    if (!survival()) return;
-    meta.inv.add(b == Grass ? (uint8_t)Dirt : itemOf(b), 1);  // whatever doesn't fit is lost
+    if (!survival() || !meta.rules.doTileDrops) return;
+    meta.inv.add(b == Grass ? (BlockId)Dirt : itemOf(b), isPanel(b) ? panelEighths(b) : 1);  // whatever doesn't fit is lost
     if (isFlower(above)) meta.inv.add(above, 1);
     if (b == Leaves && rng() % 6 == 0) meta.inv.add(ItemFood, 1);
     meta.exhaustion += 0.005f;
@@ -484,7 +552,9 @@ void Game::breakBlock(glm::ivec3 p) {
 void Game::hurt(int amount) {
     meta.health = std::max(0, meta.health - amount);
     hurtAt = now;
-    if (meta.health == 0) setScreen(Screen::Dead);
+    if (meta.health > 0) return;
+    if (!meta.rules.keepInventory) meta.inv = {};
+    setScreen(Screen::Dead);
 }
 
 void Game::respawn() {
@@ -516,7 +586,7 @@ void Game::updateSurvival(double dt, glm::dvec3 prev) {
     }
     player.canSprint = meta.hunger > 6;
 
-    if (meta.hunger >= 18 && meta.health < 20) {
+    if (meta.hunger >= 18 && meta.health < 20 && meta.rules.naturalRegeneration) {
         if ((regenTimer += dt) >= 4) { regenTimer = 0; ++meta.health; meta.exhaustion += 6; }
     } else if (meta.hunger == 0 && meta.health > 1) {
         if ((regenTimer += dt) >= 4) { regenTimer = 0; hurt(1); }
@@ -528,13 +598,13 @@ void Game::updateSurvival(double dt, glm::dvec3 prev) {
         fallStart = player.pos.y;
     } else if (player.onGround) {
         double fall = fallStart - player.pos.y - 3;
-        if (fall > 0) hurt((int)std::ceil(fall));
+        if (fall > 0 && meta.rules.fallDamage) hurt((int)std::ceil(fall));
         fallStart = player.pos.y;
     } else {
         fallStart = std::max(fallStart, player.pos.y);
     }
 
-    if (player.inLava && (lavaTimer -= dt) <= 0) { hurt(4); lavaTimer = 0.5; }
+    if (player.inLava && meta.rules.fireDamage && (lavaTimer -= dt) <= 0) { hurt(4); lavaTimer = 0.5; }
     if (!player.inLava) lavaTimer = 0;
 }
 
@@ -583,7 +653,9 @@ void Game::updateGame(double dt) {
             breakTimer -= dt;
             if (mouseLeft && breakTimer <= 0 && raycast(*world, player.eye(), glm::dvec3(player.look()), reach(), hit)) {
                 if (hit.block != breakTarget) { breakTarget = hit.block; breakProgress = 0; }
-                float hardness = blockInfo(world->get(hit.block.x, hit.block.y, hit.block.z)).hardness;
+                BlockId target = world->get(hit.block.x, hit.block.y, hit.block.z);
+                float hardness = blockInfo(target).hardness;
+                if (hardness >= 0 && (chipTimer -= dt) <= 0) { particles.chip(*world, hit, target); chipTimer = 0.06; }
                 if (hardness >= 0 && (breakProgress += dt / std::max(hardness, 0.05f)) >= 1) {
                     breakBlock(hit.block);
                     breakProgress = 0;
@@ -598,7 +670,8 @@ void Game::updateGame(double dt) {
         }
         if (mouseRight && (placeTimer -= dt) <= 0) { interact(false); placeTimer = 0.2; }
     }
-    meta.time += dt / 1200.0;  // 20 minute day
+    if (screen != Screen::Paused && !(screen == Screen::Options && optionsReturn == Screen::Paused)) particles.update(*world, dt);
+    if (meta.rules.doDaylightCycle) meta.time += dt / 1200.0;  // 20 minute day
     if ((autosaveTimer += dt) > 60) { saveWorld(); autosaveTimer = 0; }
 }
 
@@ -727,12 +800,24 @@ void Game::drawOptions() {
     float w = 150, gap = 8, x0 = ui.width / 2 - w - gap / 2, x1 = ui.width / 2 + gap / 2, y = ui.height * 0.18f;
 
     std::string light = std::string("Lighting: ") + kLightingNames[opts.lighting];
-    if (ui.button(vk.rtSupported ? light : "Lighting: Classic (no RT GPU)", ui.width / 2 - w - gap / 2, y, w * 2 + gap, 20, vk.rtSupported))
+    if (ui.button(vk.rtSupported ? light : "Lighting: Classic (no RT GPU)", x0, y, w, 20, vk.rtSupported))
         opts.lighting = (opts.lighting + 1) % LightModeCount;
+    if (ui.button("Ray Tracing Settings...", x1, y, w, 20, vk.rtSupported)) setScreen(Screen::RayTracing);
     const char* desc[LightModeCount] = {"Smooth flood-fill lighting, like the classic game.",
                                         "Hardware ray traced shadows, block lights and water reflections.",
                                         "Path traced global illumination, accumulated over frames."};
     ui.textCentered(desc[opts.lighting], ui.width / 2, y + 24, rgba(160, 165, 180), 7);
+
+    y += 40;
+    if (ui.button(std::string("Anti-aliasing: ") + kAaNames[opts.aa], x0, y, w * 2 + gap, 20))
+        do opts.aa = (opts.aa + 1) % AaCount; while (isDlss(opts.aa) && !renderer.dlssAvailable());
+    const char* aaDesc[AaCount] = {"No anti-aliasing.", "Fast edge smoothing as a post effect.",
+                                   "Temporal anti-aliasing: smooth edges and less ray tracing noise, slightly soft.",
+                                   "NVIDIA DLAA: DLSS anti-aliasing at full resolution.", "NVIDIA DLSS upscaling from 67% resolution.",
+                                   "NVIDIA DLSS upscaling from 58% resolution.", "NVIDIA DLSS upscaling from 50% resolution.",
+                                   "NVIDIA DLSS upscaling from 33% resolution."};
+    ui.textCentered(renderer.dlssAvailable() || opts.aa != AaTaa ? aaDesc[opts.aa] : "Temporal anti-aliasing. DLSS needs an NVIDIA RTX GPU.",
+                    ui.width / 2, y + 24, rgba(160, 165, 180), 7);
 
     y += 40;
     float t = (opts.renderDist - 2) / 22.0f;
@@ -743,7 +828,8 @@ void Game::drawOptions() {
 
     y += 26;
     t = (opts.renderScale - 0.25f) / 0.75f;
-    if (ui.slider("Render Scale: " + std::to_string((int)std::round(opts.renderScale * 100)) + "%", x0, y, w, 20, t, &opts.renderScale))
+    if (isDlss(opts.aa)) ui.button("Render Scale: set by DLSS", x0, y, w, 20, false);
+    else if (ui.slider("Render Scale: " + std::to_string((int)std::round(opts.renderScale * 100)) + "%", x0, y, w, 20, t, &opts.renderScale))
         opts.renderScale = std::round((0.25f + t * 0.75f) * 20) / 20;
     if (ui.button(opts.vsync ? "VSync: ON" : "VSync: OFF", x1, y, w, 20)) opts.vsync = !opts.vsync;
 
@@ -766,9 +852,68 @@ void Game::drawOptions() {
                   x1, y, w, 20, t, &opts.brightness))
         opts.brightness = std::round(t * 20) / 20;
 
+    y += 26;
+    if (ui.button(!renderer.frameGenAvailable() ? "Frame Generation: Unavailable" : opts.frameGen ? "Frame Generation: DLSS 2x" : "Frame Generation: OFF",
+                  x0, y, w * 2 + gap, 20, renderer.frameGenAvailable()))
+        opts.frameGen = !opts.frameGen;
+    ui.textCentered(renderer.frameGenAvailable() ? "Shows an AI-generated frame between each rendered frame. Smoother, slightly more latency."
+                                                 : "DLSS Frame Generation needs an NVIDIA RTX 40 series GPU or newer.",
+                    ui.width / 2, y + 24, rgba(160, 165, 180), 7);
+
     if (ui.button("Done", (ui.width - 200) / 2, ui.height - 36, 200, 20) || ui.in.escape) {
         saveOptions();
         setScreen(optionsReturn);
+    }
+}
+
+void Game::drawRayTracing() {
+    if (optionsReturn == Screen::Title) ui.tiledBackground(2, 0.3f);
+    ui.textCentered("Ray Tracing Settings", ui.width / 2, 16);
+    float w = 150, gap = 8, x0 = ui.width / 2 - w - gap / 2, x1 = ui.width / 2 + gap / 2, y = ui.height * 0.18f;
+    RtSettings& rt = opts.rt;
+    auto pct = [](float v) { return std::to_string((int)std::round(v * 100)) + "%"; };
+    const uint32_t dim = rgba(160, 165, 180);
+    float t;
+
+    ui.textCentered("Ray Traced", x0 + w / 2, y, opts.lighting == LightRayTraced ? WHITE : dim, 8);
+    ui.textCentered("Path Traced", x1 + w / 2, y, opts.lighting == LightPathTraced ? WHITE : dim, 8);
+    y += 14;
+    t = rt.shadowRays / 32.0f;
+    if (ui.slider("Shadowed Lights: " + std::to_string(rt.shadowRays), x0, y, w, 20, t, &rt.shadowRays)) rt.shadowRays = (int)std::round(t * 32);
+    t = rt.bounces / 6.0f;
+    if (ui.slider("Bounces: " + std::to_string(rt.bounces), x1, y, w, 20, t, &rt.bounces)) rt.bounces = (int)std::round(t * 6);
+
+    y += 26;
+    t = rt.rtSunSoftness;
+    if (ui.slider("Soft Sun Shadows: " + (rt.rtSunSoftness > 0 ? pct(rt.rtSunSoftness) : std::string("OFF")), x0, y, w, 20, t, &rt.rtSunSoftness))
+        rt.rtSunSoftness = std::round(t * 20) / 20;
+    t = (rt.samples - 1) / 7.0f;
+    if (ui.slider("Samples per Pixel: " + std::to_string(rt.samples), x1, y, w, 20, t, &rt.samples)) rt.samples = 1 + (int)std::round(t * 7);
+
+    y += 26;
+    t = rt.ambient / 2;
+    if (ui.slider("Sky Ambient: " + pct(rt.ambient), x0, y, w, 20, t, &rt.ambient)) rt.ambient = std::round(t * 40) / 20;
+    t = std::log2((float)rt.history) / 8;
+    if (ui.slider("Accumulation: " + std::to_string(rt.history) + " frames", x1, y, w, 20, t, &rt.history))
+        rt.history = (int)std::round(std::exp2(t * 8));
+
+    y += 26;
+    if (ui.button(rt.reflections ? "Water Reflections: ON" : "Water Reflections: OFF", x0, y, w, 20)) rt.reflections = !rt.reflections;
+    t = rt.ptSunSoftness;
+    if (ui.slider("Soft Sun Shadows: " + (rt.ptSunSoftness > 0 ? pct(rt.ptSunSoftness) : std::string("OFF")), x1, y, w, 20, t, &rt.ptSunSoftness))
+        rt.ptSunSoftness = std::round(t * 20) / 20;
+
+    y += 34;
+    t = (rt.lightStrength - 0.25f) / 2.75f;
+    if (ui.slider("Block Light Strength: " + pct(rt.lightStrength), x0, y, w, 20, t, &rt.lightStrength))
+        rt.lightStrength = std::round((0.25f + t * 2.75f) * 20) / 20;
+    if (ui.button("Reset to Defaults", x1, y, w, 20, !(rt == RtSettings{}))) rt = {};
+    ui.textCentered("Higher bounces, samples and shadowed lights look better but cost frame rate.", ui.width / 2, y + 30, dim, 7);
+    if (opts.lighting == LightClassic) ui.textCentered("Classic lighting is selected, so these only apply after switching modes.", ui.width / 2, y + 40, dim, 7);
+
+    if (ui.button("Done", (ui.width - 200) / 2, ui.height - 36, 200, 20) || ui.in.escape) {
+        saveOptions();
+        setScreen(Screen::Options);
     }
 }
 
@@ -824,13 +969,14 @@ void Game::drawHud() {
         uint8_t a = (uint8_t)(255 * std::clamp(2.0 - (now - slotChangedAt), 0.0, 1.0));
         ui.textCentered(itemName(sel.id), ui.width / 2, ui.height - (survival() ? 50 : 40), rgba(255, 255, 255, a));
     }
+    if (screen != Screen::Chat) drawChat(false);
     if (player.flying && screen == Screen::Playing) ui.text("Flying", 3, ui.height - 11, rgba(200, 200, 210), 7);
 
     if (showDebug) {
         char buf[256];
         auto p = player.pos;
         std::vector<std::string> lines;
-        lines.push_back("Ordis  " + std::to_string(fps) + " fps");
+        lines.push_back("Ordis  " + std::to_string(fps) + " fps" + (renderer.frameGenActive() ? "  (" + std::to_string(fps * 2) + " with frame generation)" : ""));
         std::snprintf(buf, sizeof buf, "XYZ: %.2f / %.2f / %.2f", p.x, p.y, p.z);
         lines.push_back(buf);
         std::snprintf(buf, sizeof buf, "Chunk: %d %d   loaded %zu   meshes %zu", (int)std::floor(p.x / 16), (int)std::floor(p.z / 16),
@@ -838,6 +984,9 @@ void Game::drawHud() {
         lines.push_back(buf);
         lines.push_back(survival() ? "Mode: Survival" : "Mode: Creative");
         lines.push_back(std::string("Lighting: ") + kLightingNames[vk.rtSupported ? opts.lighting : 0] + "  (F4 to cycle)");
+        VkExtent2D rs = renderer.renderSize();
+        std::snprintf(buf, sizeof buf, "AA: %s   render %ux%u -> %ux%u", kAaNames[opts.aa], rs.width, rs.height, vk.swapExtent.width, vk.swapExtent.height);
+        lines.push_back(buf);
         int hours = (int)(std::fmod(meta.time + 0.25, 1.0) * 24);
         std::snprintf(buf, sizeof buf, "Time: %02d:00   Seed: %lld", (hours + 1) % 24, (long long)meta.seed);
         lines.push_back(buf);
@@ -877,7 +1026,7 @@ void Game::drawInventory() {
 
     std::string tooltip;
     for (int i = 0; i < count; ++i) {
-        uint8_t b = items[i];
+        BlockId b = items[i];
         float sx = px + 8 + (i % cols) * slot, sy = py + 24 + (i / cols) * slot;
         bool hover = ui.hovered(sx, sy, slot, slot);
         ui.image(TexSlot, sx, sy, slot, slot, hover ? WHITE : rgba(220, 220, 230));
@@ -924,7 +1073,7 @@ void Game::drawStatusBars() {
 void Game::drawDeath() {
     ui.fill(0, 0, ui.width, ui.height, rgba(120, 10, 10, 110));
     ui.textCentered("You died!", ui.width / 2, ui.height * 0.3f, WHITE, 16);
-    ui.textCentered("Your inventory is safe.", ui.width / 2, ui.height * 0.3f + 22, rgba(220, 200, 200), 7);
+    ui.textCentered(meta.rules.keepInventory ? "Your inventory is safe." : "Your items are lost.", ui.width / 2, ui.height * 0.3f + 22, rgba(220, 200, 200), 7);
     float bw = 200, x = (ui.width - bw) / 2, y = ui.height * 0.5f;
     if (ui.button("Respawn", x, y, bw, 20)) respawn();
     if (ui.button("Save and Quit to Title", x, y + 26, bw, 20)) {

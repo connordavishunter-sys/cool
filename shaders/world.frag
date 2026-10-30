@@ -18,8 +18,6 @@ layout(location = 4) in float vAO;
 
 layout(location = 0) out vec4 outColor;
 
-const float EMISSION = 2.5;
-
 // Classic light-level curve, partway between the original "moody" and "bright" settings.
 float mcCurve(float l) {
     float b = 1.0 - l;
@@ -75,7 +73,7 @@ void traverse(rayQueryEXT rq, inout vec3 transmit) {
         uint p = fetchTri(uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false)), uint(rayQueryGetIntersectionGeometryIndexEXT(rq, false)),
                           uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, false)), rayQueryGetIntersectionBarycentricsEXT(rq, false), uv);
         vec4 tex = textureLod(blockTex, vec3(uv, float((p >> 3) & 255u)), 0.0);
-        if (((p >> 16) & 3u) == 3u) transmit *= mix(vec3(1.0), tex.rgb, tex.a);
+        if (((p >> 16) & 3u) == 3u) transmit *= mix(vec3(1.0), tex.rgb, min(tex.a * 1.5, 1.0));
         else if (tex.a >= 0.5) rayQueryConfirmIntersectionEXT(rq);
     }
 }
@@ -89,13 +87,13 @@ vec3 visibility(vec3 o, vec3 d, float tmax) {
     return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT ? vec3(0.0) : transmit;
 }
 
-struct Hit { vec3 pos; vec3 n; vec3 albedo; bool emissive; };
+struct Hit { vec3 pos; vec3 n; vec3 albedo; bool emissive; vec3 transmit; };  // transmit: stained glass tint on the way
 
 bool trace(vec3 o, vec3 d, float tmax, out Hit h) {
     rayQueryEXT rq;
     rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, 0xFF, o, 0.001, d, tmax);
-    vec3 transmit = vec3(1.0);
-    traverse(rq, transmit);
+    h.transmit = vec3(1.0);
+    traverse(rq, h.transmit);
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) return false;
 
     vec2 uv;
@@ -118,7 +116,7 @@ vec3 lightContribution(Light l, vec3 p, vec3 n, out vec3 dir, out float dist) {
     float ndl = dot(n, dir);
     if (d2 > 256.0 || ndl <= 0.0) return vec3(0.0);
     float win = 1.0 - d2 / 256.0;
-    return l.color.rgb * ndl * win * win / (d2 + 0.5);
+    return l.color.rgb * ndl * win * win / (0.4 * d2 + 1.0);  // gentle falloff so nearby lights overlap
 }
 
 vec3 sunLight(vec3 o, vec3 n, float jitter) {
@@ -131,13 +129,13 @@ vec3 sunLight(vec3 o, vec3 n, float jitter) {
 // Ray traced mode: hard-ish shadows from the sun and nearby block lights.
 vec3 directRT(vec3 p, vec3 n) {
     vec3 o = p + n * 0.002;
-    vec3 c = sunLight(o, n, 0.0);
-    int rays = 0;
+    vec3 c = sunLight(o, n, fd.rt.x);
+    uint rays = 0u;
     for (uint i = 0u; i < fd.info.z; ++i) {
         vec3 dir; float dist;
         vec3 lc = lightContribution(lights[i], p, n, dir, dist);
         if (max(lc.r, max(lc.g, lc.b)) < 0.003) continue;
-        if (rays < 8) {
+        if (rays < fd.rtCount.x) {
             ++rays;
             lc *= visibility(o, dir, dist - 0.9);
         }
@@ -149,7 +147,7 @@ vec3 directRT(vec3 p, vec3 n) {
 // Path traced mode: next-event estimation with one light chosen proportionally to its contribution.
 vec3 directPT(vec3 p, vec3 n) {
     vec3 o = p + n * 0.002;
-    vec3 c = sunLight(o, n, 0.03);
+    vec3 c = sunLight(o, n, fd.rt.x);
     float total = 0.0, pick = rnd();
     int chosen = -1;
     float chosenW = 0.0;
@@ -173,10 +171,12 @@ vec3 directPT(vec3 p, vec3 n) {
 vec3 pathTrace(vec3 p, vec3 n, vec3 albedo) {
     vec3 result = albedo * directPT(p, n);
     vec3 throughput = albedo;
-    for (int bounce = 0; bounce < 2; ++bounce) {
+    for (uint bounce = 0u; bounce < fd.rtCount.y; ++bounce) {
         vec3 d = cosineDir(n);
         Hit h;
-        if (!trace(p + n * 0.002, d, 512.0, h)) {
+        bool hit = trace(p + n * 0.002, d, 512.0, h);
+        throughput *= h.transmit;
+        if (!hit) {
             result += throughput * skyColor(d, false);
             break;
         }
@@ -190,8 +190,8 @@ vec3 pathTrace(vec3 p, vec3 n, vec3 albedo) {
 }
 
 vec3 shadeHit(Hit h) {
-    if (h.emissive) return h.albedo * EMISSION;
-    return h.albedo * (directRT(h.pos, h.n) + fd.skyZenith.rgb * 0.35);
+    if (h.emissive) return h.albedo * fd.rt.z;
+    return h.albedo * (directRT(h.pos, h.n) + fd.skyZenith.rgb * 0.35 * fd.rt.y);
 }
 #endif
 
@@ -206,6 +206,14 @@ void main() {
 
     vec3 N = NORMALS[n];
     vec3 V = normalize(vPos);
+    bool waves = n == 2u && (vPacked & (1u << 11)) != 0u;
+    float slopeShade = 1.0;  // flat-lit surfaces (classic water, glowing lava) brighten and darken along the waves
+    if (waves) {  // tilt the surface normal along the waves
+        const float e = 0.05;
+        float h = waveHeight(vPos, emissive);
+        N = normalize(vec3(h - waveHeight(vPos + vec3(e, 0, 0), emissive), e, h - waveHeight(vPos + vec3(0, 0, e), emissive)));
+        slopeShade = emissive ? 1.0 + 3.0 * h : 1.0 + 2.5 * dot(N.xz, vec2(0.6, 0.4));  // lava troughs cool and darken
+    }
     if (KIND == 2 && dot(V, N) > 0.0) N = -N;  // looking at the surface from below
     uint mode = fd.info.x;
     vec3 col;
@@ -216,16 +224,18 @@ void main() {
 #endif
 
     if (emissive) {
-        col = tex.rgb * (mode == 0u ? 1.0 : EMISSION);
+        col = tex.rgb * (mode == 0u ? 1.0 : fd.rt.z) * slopeShade;
     } else if (mode == 0u) {
-        col = tex.rgb * classicLight(n);
+        col = tex.rgb * classicLight(n) * (KIND == 2 ? slopeShade : 1.0);
     }
 #ifdef RT
     else if (mode == 1u || KIND >= 2) {  // blended surfaces aren't accumulated, so they use direct lighting
         float ambient = mcCurve(vLight.x) * mix(0.45, 1.0, vAO);
-        col = tex.rgb * (directRT(vPos, N) + fd.skyZenith.rgb * 0.6 * ambient + 0.01);
+        col = tex.rgb * (directRT(vPos, N) + fd.skyZenith.rgb * 0.6 * ambient * fd.rt.y + 0.01);
     } else {
-        col = pathTrace(vPos, N, tex.rgb);
+        col = vec3(0.0);
+        for (uint s = 0u; s < fd.rtCount.z; ++s) col += pathTrace(vPos, N, tex.rgb);
+        col /= float(fd.rtCount.z);
     }
 #else
     else {
@@ -235,11 +245,11 @@ void main() {
 
     float alpha = KIND >= 2 ? tex.a : 1.0;
 #ifdef RT
-    if (KIND == 2 && mode != 0u) {
+    if (KIND == 2 && mode != 0u && fd.rt.w > 0.5) {
         vec3 R = reflect(V, N);
         float F = 0.02 + 0.98 * pow(1.0 - max(dot(-V, N), 0.0), 5.0);
         Hit h;
-        vec3 refl = trace(vPos + N * 0.01, R, 256.0, h) ? shadeHit(h) : skyColor(R, true);
+        vec3 refl = (trace(vPos + N * 0.01, R, 256.0, h) ? shadeHit(h) : skyColor(R, true)) * h.transmit;
         col = mix(col, refl, F);
         alpha = mix(alpha, 1.0, F);
     }
@@ -249,7 +259,8 @@ void main() {
     if (fd.fog.z > 0.5) {
         col = mix(col, WATER_FOG * max(fd.sunDir.w, 0.15), 1.0 - exp(-dist * 0.08));
     } else {
-        col = mix(col, skyColor(V, false), smoothstep(fd.fog.x, fd.fog.y, dist));
+        bool cloud = (vPacked & (1u << 12)) != 0u;  // clouds reach past the terrain and fade by horizontal distance
+        col = mix(col, skyColor(V, false), cloud ? smoothstep(fd.fog.y, fd.fog.y * 2.0, length(vPos.xz)) : smoothstep(fd.fog.x, fd.fog.y, dist));
     }
     outColor = vec4(col, alpha);
 }

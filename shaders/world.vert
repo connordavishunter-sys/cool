@@ -12,9 +12,11 @@ layout(location = 1) out vec2 vUV;
 layout(location = 2) flat out uint vPacked;
 layout(location = 3) out vec4 vLight;
 layout(location = 4) out float vAO;
+invariant gl_Position;  // the depth prepass and the shading pass must produce identical depth
 
 void main() {
     vPos = inPos + pc.offset.xyz;
+    if ((inPacked & (1u << 11)) != 0u) vPos.y += waveHeight(vPos, ((inPacked >> 15) & 1u) != 0u);
     vUV = packedUV(inPacked);
     vPacked = inPacked;
     vLight = unpackUnorm4x8(inLight);
