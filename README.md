@@ -82,10 +82,9 @@ place them:
 - **Vertical slabs** sit against the face you click.
 - **Sideways stairs** stand upright, with the open corner facing you.
 - Placing a slab onto the open half of a matching slab fills the block in.
-- **Panels** (stone, planks and log) are 1/8 of a block thick, on the floor of a block or hanging from its ceiling
-  when you click the top half of a side or an underside. Clicking a panel's open face, or placing into its cell, with
-  the same panel makes it an eighth thicker; at eight eighths it becomes the full block. Breaking one gives back every
-  eighth.
+- **Panels** (stone, planks and log) are 1/8 of a block thick and lie against the face you click: floors, ceilings or
+  walls. Clicking a panel's open face, or placing into its cell, with the same panel makes it an eighth thicker; at
+  eight eighths it becomes the full block. Breaking one gives back every eighth.
 - **Stairs connect** like the original game. A perpendicular stair behind one turns it into an outer corner, and one in
   front makes an inner corner, unless that would break a straight run. Collision and the selection box follow the corner.
 
@@ -179,7 +178,8 @@ Game rules are saved per world in `level.dat`:
 
 ## Layout
 
-- `src/world.*`: chunks, terrain generation, threaded lighting/meshing, chunk streaming and RLE save files
+- `src/world.*`: chunks, terrain generation, threaded lighting/meshing, chunk streaming and RLE save files (16-bit
+  block ids; worlds saved with 8-bit ids are converted as they load)
 - `src/renderer.*`, `src/vk_context.*`: Vulkan setup, chunk meshes, BLAS/TLAS management, frame graph
 - `src/dlss.*`: DLSS upscaling and frame generation through NVIDIA NGX (stubs when built without the SDK)
 - `src/particles.*`: block breaking particles

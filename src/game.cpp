@@ -111,21 +111,26 @@ static WorldMeta readMeta(const fs::path& dir) {
     readValue(kv, "spawnY", m.spawn.y);
     readValue(kv, "spawnZ", m.spawn.z);
     for (const auto& r : kGameRules) readValue(kv, (std::string("rule.") + r.name).c_str(), m.rules.*r.value);
-    auto valid = [](int id) { return isBlockItem((uint8_t)id) || id == ItemFood; };
+    auto valid = [](int id) { return isBlockItem((BlockId)id) || id == ItemFood; };
+    const bool wideIds = kv.count("ids");  // saves without it stored 8-bit ids
+    auto upgrade = [&](int id) {
+        if (wideIds || id < 0 || id > 255) return id;
+        return id == OLD_FOOD ? (int)ItemFood : (int)fromLegacyId((uint8_t)id);
+    };
     if (bool legacy = !kv.count("items"); !legacy || kv.count("inventory")) {
         std::istringstream ss(kv[legacy ? "inventory" : "items"]);
         int id, n;
         char colon;
         for (auto& s : m.inv.slots) {
             if (!(ss >> id >> colon >> n)) break;
-            if (legacy && id == LEGACY_FOOD) id = ItemFood;
-            if (valid(id) && n > 0) s = {(uint8_t)id, (uint8_t)std::min(n, STACK_MAX)};
+            id = legacy && id == LEGACY_FOOD ? (int)ItemFood : upgrade(id);
+            if (valid(id) && n > 0) s = {(BlockId)id, (uint8_t)std::min(n, STACK_MAX)};
         }
     } else if (kv.count("hotbar")) {  // older saves only had a creative hotbar
         std::istringstream ss(kv["hotbar"]);
         int id;
         for (int i = 0; i < 9 && ss >> id; ++i)
-            if (valid(id)) m.inv.slots[i] = {(uint8_t)id, 1};
+            if (valid(id = upgrade(id))) m.inv.slots[i] = {(BlockId)id, 1};
     }
     m.slot = std::clamp(m.slot, 0, 8);
     m.mode = m.mode == Survival ? Survival : Creative;
@@ -141,7 +146,7 @@ static void writeMeta(const fs::path& dir, const WorldMeta& m) {
       << "\nhealth=" << m.health << "\nhunger=" << m.hunger << "\nsaturation=" << m.saturation << "\nexhaustion=" << m.exhaustion
       << "\nspawnX=" << m.spawn.x << "\nspawnY=" << m.spawn.y << "\nspawnZ=" << m.spawn.z;
     for (const auto& r : kGameRules) f << "\nrule." << r.name << '=' << m.rules.*r.value;
-    f << "\nitems=";
+    f << "\nids=16\nitems=";
     for (const auto& s : m.inv.slots) f << (int)s.id << ':' << (int)s.count << ' ';
     f << "\n";
 }
@@ -214,7 +219,7 @@ void Game::createWorld() {
     m.name = newName.empty() ? "New World" : newName;
     m.mode = newMode;
     if (m.mode == Creative) {
-        const uint8_t hotbar[9] = {Grass, Dirt, Stone, Sand, Planks, Log, Glass, Water, WhiteLight};
+        const BlockId hotbar[9] = {Grass, Dirt, Stone, Sand, Planks, Log, Glass, Water, WhiteLight};
         for (int i = 0; i < 9; ++i) m.inv.slots[i] = {hotbar[i], 1};
     }
 
@@ -386,7 +391,7 @@ void Game::handleEvent(const SDL_Event& e, UiInput& in) {
             if (e.button.button == SDL_BUTTON_MIDDLE) {
                 RayHit hit;
                 if (raycast(*world, player.eye(), glm::dvec3(player.look()), reach(), hit)) {
-                    uint8_t b = itemOf(world->get(hit.block.x, hit.block.y, hit.block.z));
+                    BlockId b = itemOf(world->get(hit.block.x, hit.block.y, hit.block.z));
                     if (!survival()) meta.inv.slots[meta.slot] = {b, 1};
                     for (int i = 0; i < 9 && survival(); ++i)
                         if (meta.inv.slots[i].id == b) { meta.slot = i; break; }
@@ -456,6 +461,9 @@ void Game::handleEvent(const SDL_Event& e, UiInput& in) {
     }
 }
 
+// The index of the face (+X, -X, +Y, -Y, +Z, -Z) a unit normal points out of.
+static int faceOf(glm::ivec3 n) { return n.x ? (n.x < 0) : n.y ? 2 + (n.y < 0) : 4 + (n.z < 0); }
+
 void Game::interact(bool destroy) {
     ItemStack& item = meta.inv.slots[meta.slot];
     if (!destroy && survival() && item.id == ItemFood && !item.empty()) {
@@ -476,9 +484,9 @@ void Game::interact(bool destroy) {
     // Clicking the open face of a panel with a panel of the same material makes it an eighth thicker, and the
     // open side of a slab with the same slab fills the block in.
     glm::ivec3 p = hit.block;
-    uint8_t target = world->get(p.x, p.y, p.z), b = Air;
-    if (isPanel(target) && isPanel(item.id) && panelMaterial(target) == panelMaterial(item.id) && hit.normal.y == (panelTop(target) ? -1 : 1))
-        b = panelId(panelMaterial(target), panelEighths(target) + 1, panelTop(target));
+    BlockId target = world->get(p.x, p.y, p.z), b = Air;
+    if (isPanel(target) && isPanel(item.id) && panelMaterial(target) == panelMaterial(item.id) && faceOf(hit.normal) == (panelFace(target) ^ 1))
+        b = panelId(panelMaterial(target), panelEighths(target) + 1, panelFace(target));
     if (isShaped(target) && isShaped(item.id) && shapeMaterial(target) == shapeMaterial(item.id) &&
         shapeOf(shapeState(target)) == shapeOf(shapeState(item.id)) && shapeOf(shapeState(target)) <= ShapeVSlab) {
         static const uint8_t halves[3][2] = {{0xAA, 0x55}, {0xF0, 0x0F}, {0xCC, 0x33}};  // +/- half per axis
@@ -488,12 +496,12 @@ void Game::interact(bool destroy) {
     if (b == Air) {
         p += hit.normal;
         b = orient(item.id, hit);
-        uint8_t existing = world->get(p.x, p.y, p.z);
+        BlockId existing = world->get(p.x, p.y, p.z);
         bool fills = isShaped(existing) && isShaped(b) && shapeMaterial(existing) == shapeMaterial(b) &&
                      (blockInfo(existing).mask ^ blockInfo(b).mask) == 0xFF;
         if (fills) b = shapeMaterial(b);
         else if (isPanel(existing) && isPanel(b) && panelMaterial(existing) == panelMaterial(b))
-            b = panelId(panelMaterial(b), panelEighths(existing) + 1, panelTop(existing));
+            b = panelId(panelMaterial(b), panelEighths(existing) + 1, panelFace(existing));
         else if (existing != Air && !isLiquid(existing)) return;
     }
     if (p.y < 0 || p.y >= CH) return;
@@ -505,14 +513,14 @@ void Game::interact(bool destroy) {
 }
 
 // Turns a shaped item into the oriented block placed against the hit face: slabs and stairs go upside down
-// on the top half of a face, stairs climb away from the player, vertical slabs sit against the clicked face
-// and sideways stairs open towards the player.
-uint8_t Game::orient(uint8_t item, const RayHit& hit) const {
-    double fy = hit.point.y - std::floor(hit.point.y);
-    bool upper = hit.normal.y < 0 || (hit.normal.y == 0 && fy > 0.5);
-    if (isPanel(item)) return panelId(panelMaterial(item), 1, upper);
+// on the top half of a face, stairs climb away from the player, vertical slabs and panels sit against the clicked
+// face and sideways stairs open towards the player.
+BlockId Game::orient(BlockId item, const RayHit& hit) const {
+    if (isPanel(item)) return panelId(panelMaterial(item), 1, faceOf(hit.normal) ^ 1);
     if (!isShaped(item)) return item;
     glm::vec3 look = player.look();
+    double fy = hit.point.y - std::floor(hit.point.y);
+    bool upper = hit.normal.y < 0 || (hit.normal.y == 0 && fy > 0.5);
     int facing = std::abs(look.x) > std::abs(look.z) ? (look.x > 0 ? 0 : 1) : (look.z > 0 ? 2 : 3);
     int against = hit.normal.x ? (hit.normal.x > 0 ? 1 : 0) : (hit.normal.z > 0 ? 3 : 2);
     int state = 0;
@@ -526,7 +534,7 @@ uint8_t Game::orient(uint8_t item, const RayHit& hit) const {
 }
 
 void Game::breakBlock(glm::ivec3 p) {
-    uint8_t b = world->get(p.x, p.y, p.z), above = world->get(p.x, p.y + 1, p.z);
+    BlockId b = world->get(p.x, p.y, p.z), above = world->get(p.x, p.y + 1, p.z);
     world->set(p.x, p.y, p.z, Air);
     particles.burst(*world, p, b);
     if (isFlower(above)) {  // lost its footing
@@ -535,7 +543,7 @@ void Game::breakBlock(glm::ivec3 p) {
     }
     worldEdited = true;
     if (!survival() || !meta.rules.doTileDrops) return;
-    meta.inv.add(b == Grass ? (uint8_t)Dirt : itemOf(b), isPanel(b) ? panelEighths(b) : 1);  // whatever doesn't fit is lost
+    meta.inv.add(b == Grass ? (BlockId)Dirt : itemOf(b), isPanel(b) ? panelEighths(b) : 1);  // whatever doesn't fit is lost
     if (isFlower(above)) meta.inv.add(above, 1);
     if (b == Leaves && rng() % 6 == 0) meta.inv.add(ItemFood, 1);
     meta.exhaustion += 0.005f;
@@ -645,7 +653,7 @@ void Game::updateGame(double dt) {
             breakTimer -= dt;
             if (mouseLeft && breakTimer <= 0 && raycast(*world, player.eye(), glm::dvec3(player.look()), reach(), hit)) {
                 if (hit.block != breakTarget) { breakTarget = hit.block; breakProgress = 0; }
-                uint8_t target = world->get(hit.block.x, hit.block.y, hit.block.z);
+                BlockId target = world->get(hit.block.x, hit.block.y, hit.block.z);
                 float hardness = blockInfo(target).hardness;
                 if (hardness >= 0 && (chipTimer -= dt) <= 0) { particles.chip(*world, hit, target); chipTimer = 0.06; }
                 if (hardness >= 0 && (breakProgress += dt / std::max(hardness, 0.05f)) >= 1) {
@@ -1018,7 +1026,7 @@ void Game::drawInventory() {
 
     std::string tooltip;
     for (int i = 0; i < count; ++i) {
-        uint8_t b = items[i];
+        BlockId b = items[i];
         float sx = px + 8 + (i % cols) * slot, sy = py + 24 + (i / cols) * slot;
         bool hover = ui.hovered(sx, sy, slot, slot);
         ui.image(TexSlot, sx, sy, slot, slot, hover ? WHITE : rgba(220, 220, 230));

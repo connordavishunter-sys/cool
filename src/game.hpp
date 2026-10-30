@@ -142,7 +142,7 @@ private:
     void updateMusic();
     void interact(bool breakBlock);
     void breakBlock(glm::ivec3 p);
-    uint8_t orient(uint8_t item, const RayHit& hit) const;
+    BlockId orient(BlockId item, const RayHit& hit) const;
     bool survival() const { return meta.mode == Survival; }
     double reach() const { return survival() ? 5.0 : 6.0; }
     void updateSurvival(double dt, glm::dvec3 prevPos);

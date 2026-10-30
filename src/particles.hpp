@@ -11,8 +11,8 @@
 // and are drawn as camera-facing cutout quads through the world pipeline, so every lighting mode lights them.
 class Particles {
 public:
-    void burst(const World& world, glm::ivec3 p, uint8_t block);  // a block was broken
-    void chip(const World& world, const RayHit& hit, uint8_t block);  // a block is being mined
+    void burst(const World& world, glm::ivec3 p, BlockId block);  // a block was broken
+    void chip(const World& world, const RayHit& hit, BlockId block);  // a block is being mined
     void update(const World& world, double dt);
     void clear() { list.clear(); }
     // Quads in render space (relative to the camera), in the world vertex format.
@@ -31,5 +31,5 @@ private:
     std::mt19937 rng{1234};
 
     float rnd(float lo, float hi) { return std::uniform_real_distribution<float>(lo, hi)(rng); }
-    void spawn(const World& world, glm::dvec3 pos, glm::vec3 vel, uint8_t block);
+    void spawn(const World& world, glm::dvec3 pos, glm::vec3 vel, BlockId block);
 };

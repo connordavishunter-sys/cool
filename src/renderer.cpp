@@ -946,7 +946,7 @@ void Renderer::renderWorld(VkCommandBuffer cmd, Frame& f, const SceneParams& sp)
             if (glm::length(glm::vec2(o.x + 8, o.z + 8)) > 72) continue;
             for (auto& l : c->lights) {
                 glm::vec3 p = o + glm::vec3(l.x + 0.5f, l.y + 0.5f, l.z + 0.5f);
-                const auto& e = blockInfo((uint8_t)l.w).emit;
+                const auto& e = blockInfo((BlockId)l.w).emit;
                 lights.push_back({glm::dot(p, p), {glm::vec4(p, 1), glm::vec4(glm::vec3(e[0], e[1], e[2]) / 15.0f * LIGHT_INTENSITY * sp.rt.lightStrength, 0)}});
             }
         }

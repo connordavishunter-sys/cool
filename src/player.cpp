@@ -12,7 +12,7 @@ glm::vec3 Player::look() const {
 struct WorldBox { glm::dvec3 lo, hi; };
 
 // World-space boxes of block b at p, kept in doubles so they stay exact far from the origin.
-static int worldBoxes(const World& world, glm::ivec3 p, uint8_t b, WorldBox out[8]) {
+static int worldBoxes(const World& world, glm::ivec3 p, BlockId b, WorldBox out[8]) {
     Box boxes[8];
     int n = blockBoxes(b, blockShape(b, [&](int x, int y, int z) { return world.get(x, y, z); }, p.x, p.y, p.z), boxes);
     for (int i = 0; i < n; ++i)
@@ -31,7 +31,7 @@ double Player::clip(const World& world, int axis, double delta) const {
     for (int y = (int)std::floor(qlo.y); y <= (int)std::floor(qhi.y); ++y)
         for (int z = (int)std::floor(qlo.z); z <= (int)std::floor(qhi.z); ++z)
             for (int x = (int)std::floor(qlo.x); x <= (int)std::floor(qhi.x); ++x) {
-                uint8_t b = world.get(x, y, z);
+                BlockId b = world.get(x, y, z);
                 if (!blockInfo(b).solid) continue;
                 WorldBox boxes[8];
                 int n = worldBoxes(world, {x, y, z}, b, boxes);
@@ -48,7 +48,7 @@ double Player::clip(const World& world, int axis, double delta) const {
     return delta > 0 ? std::max(d, 0.0) : std::min(d, 0.0);
 }
 
-bool Player::intersects(const World& world, glm::ivec3 p, uint8_t b) const {
+bool Player::intersects(const World& world, glm::ivec3 p, BlockId b) const {
     WorldBox boxes[8];
     int n = worldBoxes(world, p, b, boxes);
     glm::dvec3 lo = pos - glm::dvec3(HALF_WIDTH, 0, HALF_WIDTH), hi = pos + glm::dvec3(HALF_WIDTH, HEIGHT, HALF_WIDTH);
@@ -155,7 +155,7 @@ bool raycast(const World& world, glm::dvec3 o, glm::dvec3 d, double maxDist, Ray
     }
     double t = 0;
     while (t <= maxDist) {
-        uint8_t b = world.get(cell.x, cell.y, cell.z);
+        BlockId b = world.get(cell.x, cell.y, cell.z);
         if (b != Air && !isLiquid(b)) {
             WorldBox boxes[8];
             int n = worldBoxes(world, cell, b, boxes);

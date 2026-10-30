@@ -109,7 +109,7 @@ void Ui::tiledBackground(int layer, float brightness) {
 }
 
 // Isometric cube: top, left (+Z) and right (+X) faces.
-void Ui::blockIcon(uint8_t block, float cx, float cy, float size) {
+void Ui::blockIcon(BlockId block, float cx, float cy, float size) {
     if (block == ItemFood) {
         float s = size * 0.8f;
         image(TexHunger, cx - s / 2, cy - s / 2, s, s);

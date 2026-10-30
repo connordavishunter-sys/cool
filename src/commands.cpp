@@ -21,9 +21,9 @@ int findItem(const std::string& name) {
     if (n == "air") return Air;
     if (n == "food") return ItemFood;
     for (int b = 1; b < BlockCount; ++b) {
-        std::string id = lower(blockInfo((uint8_t)b).name);
+        std::string id = lower(blockInfo((BlockId)b).name);
         std::replace(id.begin(), id.end(), ' ', '_');
-        if (id == n) return itemOf((uint8_t)b);
+        if (id == n) return itemOf((BlockId)b);
     }
     return -1;
 }
@@ -158,9 +158,9 @@ void Game::runCommand(const std::string& line) {
         if (id <= Air) return error("Unknown item '" + a[1] + "'");
         int n = a.size() > 2 ? std::atoi(a[2].c_str()) : 1;
         if (n < 1 || n > STACK_MAX * INV_SIZE) return error("Count must be between 1 and " + std::to_string(STACK_MAX * INV_SIZE));
-        int given = n - meta.inv.add((uint8_t)id, n);
+        int given = n - meta.inv.add((BlockId)id, n);
         if (!given) return error("Your inventory is full");
-        say("Gave " + std::to_string(given) + " " + itemName((uint8_t)id));
+        say("Gave " + std::to_string(given) + " " + itemName((BlockId)id));
     } else if (cmd == "setblock" || cmd == "fill") {
         const bool fill = cmd == "fill";
         const size_t args = fill ? 8 : 5;
@@ -180,7 +180,7 @@ void Game::runCommand(const std::string& line) {
                 if (!world->isLoaded(x, z)) return error("That area isn't loaded");
         for (int y = mn.y; y <= mx.y; ++y)
             for (int z = mn.z; z <= mx.z; ++z)
-                for (int x = mn.x; x <= mx.x; ++x) world->set(x, y, z, (uint8_t)id);
+                for (int x = mn.x; x <= mx.x; ++x) world->set(x, y, z, (BlockId)id);
         worldEdited = true;
         say(fill ? "Filled " + std::to_string(size.x * size.y * size.z) + " blocks" : "Block placed");
     } else if (cmd == "gamerule") {

@@ -43,10 +43,10 @@ static uint64_t hash3(uint64_t a, int64_t b, int64_t c) {
 // Every chunk re-derives the trees around it and keeps the blocks that land inside it.
 void Terrain::placeTrees(Chunk& c) const {
     const int CELL = 5, R = 2;
-    auto put = [&](int wx, int y, int wz, uint8_t b) {
+    auto put = [&](int wx, int y, int wz, BlockId b) {
         int x = wx - c.cx * CW, z = wz - c.cz * CW;
         if (x < 0 || z < 0 || x >= CW || z >= CW || y >= CH) return;
-        uint8_t& cur = c.blocks[Chunk::index(x, y, z)];
+        BlockId& cur = c.blocks[Chunk::index(x, y, z)];
         if (cur == Air || (b == Log && cur == Leaves)) cur = b;
     };
     auto floorDiv = [](int a, int b) { return (a - (((a % b) + b) % b)) / b; };
@@ -85,7 +85,7 @@ void Terrain::generate(Chunk& c) const {
             int h = heights[z * CW + x] = height(wx, wz);
             bool beach = h <= SEA_LEVEL + 1;
             for (int y = 0; y <= std::max(h, SEA_LEVEL); ++y) {
-                uint8_t b;
+                BlockId b;
                 if (y > h) b = Water;
                 else if (y < h - 3) b = Stone;
                 else if (y < h) b = beach ? Sand : Dirt;
@@ -104,7 +104,7 @@ void Terrain::generate(Chunk& c) const {
             uint64_t patch = hash3(seed ^ 0xF1F1F1, wx >> 3, wz >> 3);
             if (patch % 4 || hash3(seed, wx, wz) % 6 || h + 1 >= CH) continue;
             if (c.get(x, h, z) != Grass || c.get(x, h + 1, z) != Air) continue;
-            c.blocks[Chunk::index(x, h + 1, z)] = (uint8_t)(RedFlower + (patch >> 8) % 6);
+            c.blocks[Chunk::index(x, h + 1, z)] = (BlockId)(RedFlower + (patch >> 8) % 6);
         }
 }
 
@@ -163,10 +163,11 @@ const int CORNERS[6][4][3] = {
     {{1, 0, 0}, {0, 0, 0}, {0, 1, 0}, {1, 1, 0}},
 };
 
-inline bool occludes(uint8_t b) { return blockInfo(b).opaque || isPartial(b); }
+inline bool occludes(BlockId b) { return blockInfo(b).opaque || isPartial(b); }
 
 struct Scratch {
-    std::vector<uint8_t> blk, sky, lr, lg, lb;
+    std::vector<BlockId> blk;
+    std::vector<uint8_t> sky, lr, lg, lb;
     std::vector<uint32_t> queue;
     std::vector<uint64_t> emitters;  // emission colour << 32 | cell
     std::vector<float> acc;          // summed linear block light, RGB per cell
@@ -187,8 +188,8 @@ thread_local Scratch S;
 struct Mesher {
     int top = 0;  // everything above is open air with full skylight
 
-    uint8_t block(int x, int y, int z) const { return y < 0 || y >= CH ? (uint8_t)Air : S.blk[ri(x, y, z)]; }
-    uint8_t cells(uint8_t b, int x, int y, int z) const {  // occupied half-block cells, with stair corners
+    BlockId block(int x, int y, int z) const { return y < 0 || y >= CH ? (BlockId)Air : S.blk[ri(x, y, z)]; }
+    uint8_t cells(BlockId b, int x, int y, int z) const {  // occupied half-block cells, with stair corners
         return stairMask(b, [&](int px, int py, int pz) { return block(px, py, pz); }, x, y, z);
     }
     bool opaqueAt(int x, int y, int z) const {  // stops light and casts AO
@@ -212,7 +213,7 @@ struct Mesher {
             for (int x = 0; x < R; ++x) {
                 int v = 15;
                 for (int y = top; y >= 0; --y) {
-                    uint8_t b = S.blk[ri(x, y, z)];
+                    BlockId b = S.blk[ri(x, y, z)];
                     if (occludes(b) || b == Lava) v = 0;
                     else if (b == Water || b == Leaves) v = std::max(0, v - (b == Water ? 2 : 1));
                     S.sky[ri(x, y, z)] = (uint8_t)v;
@@ -288,7 +289,7 @@ struct Mesher {
                 int nx = x + d[0], ny = y + d[1], nz = z + d[2];
                 if (nx < 0 || nz < 0 || nx >= R || nz >= R || ny < 0 || ny > top) continue;
                 int ni = ri(nx, ny, nz);
-                uint8_t nb = S.blk[ni];
+                BlockId nb = S.blk[ni];
                 if (occludes(nb)) continue;
                 int att = nb == Water || nb == Leaves ? 2 : 1;
                 bool grew = false;
@@ -319,7 +320,7 @@ struct Mesher {
         for (int y = 0; y <= top; ++y)
             for (int z = 16; z < 32; ++z)
                 for (int x = 16; x < 32; ++x) {
-                    uint8_t b = S.blk[ri(x, y, z)];
+                    BlockId b = S.blk[ri(x, y, z)];
                     if (b == Air) continue;
                     const BlockInfo& info = blockInfo(b);
                     auto& out = listFor(m, info.kind, lists);
@@ -345,12 +346,12 @@ struct Mesher {
 
     // Cubes, including slabs and stairs: each face is split into quarters wherever a half-block cell is
     // exposed, either on the block's boundary or on its middle plane (the tread of a stair).
-    bool emitCube(std::vector<Vertex>& out, int x, int y, int z, uint8_t b, bool emissive) {
+    bool emitCube(std::vector<Vertex>& out, int x, int y, int z, BlockId b, bool emissive) {
         bool liquidTop = isLiquid(b) && block(x, y + 1, z) != b, any = false;
         for (int f = 0; f < 6; ++f) {
             const int* d = DIRS[f];
             if (y + d[1] < 0) continue;
-            uint8_t nb = block(x + d[0], y + d[1], z + d[2]);
+            BlockId nb = block(x + d[0], y + d[1], z + d[2]);
             const BlockInfo& ni = blockInfo(nb);
             bool covers = ni.opaque || (nb == b && b != Leaves);  // leaves keep inner faces
             const uint8_t mask = cells(b, x, y, z), nmask = isPartial(nb) ? cells(nb, x + d[0], y + d[1], z + d[2]) : 0;
@@ -384,7 +385,7 @@ struct Mesher {
     }
 
     // A panel is one box; its faces on the cell boundary are hidden where the neighbour covers them.
-    bool emitPanel(std::vector<Vertex>& out, int x, int y, int z, uint8_t b) {
+    bool emitPanel(std::vector<Vertex>& out, int x, int y, int z, BlockId b) {
         Box boxes[8];
         blockBoxes(b, 0, boxes);
         const Box& bx = boxes[0];
@@ -399,11 +400,14 @@ struct Mesher {
         }
         return any;
     }
-    bool covered(const Box& bx, int f, uint8_t b, int nx, int ny, int nz) const {
-        const uint8_t nb = block(nx, ny, nz);
+    bool covered(const Box& bx, int f, BlockId b, int nx, int ny, int nz) const {
+        const BlockId nb = block(nx, ny, nz);
         const int axis = f / 2;
         if (blockInfo(nb).opaque) return true;
-        if (isPanel(nb)) return axis == 1 ? panelTop(nb) == (f == 3) : panelTop(nb) == panelTop(b) && panelEighths(nb) >= panelEighths(b);
+        if (isPanel(nb)) {  // lying against this face, or a matching panel beside this one at least as thick
+            const int g = panelFace(nb);
+            if (g == (f ^ 1) || (isPanel(b) && g == panelFace(b) && g / 2 != axis && panelEighths(nb) >= panelEighths(b))) return true;
+        }
         if (!isPartial(nb)) return false;
         const uint8_t m = cells(nb, nx, ny, nz);
         for (int i = 0; i < 8; ++i) {  // every neighbour cell touching the face must be filled
@@ -416,7 +420,7 @@ struct Mesher {
         return true;
     }
 
-    bool emitPane(std::vector<Vertex>& out, int x, int y, int z, uint8_t b) {
+    bool emitPane(std::vector<Vertex>& out, int x, int y, int z, BlockId b) {
         Box boxes[8];
         int n = blockBoxes(b, blockShape(b, [&](int px, int py, int pz) { return block(px, py, pz); }, x, y, z), boxes);
         bool any = false;
@@ -435,7 +439,7 @@ struct Mesher {
     }
 
     // Two crossed double-sided quads, lit by the flower's own cell.
-    void emitCross(std::vector<Vertex>& out, int x, int y, int z, uint8_t b) {
+    void emitCross(std::vector<Vertex>& out, int x, int y, int z, BlockId b) {
         const float a = 0.5f - 0.3536f, c = 0.5f + 0.3536f;  // planes one block wide
         const float ends[2][4] = {{a, a, c, c}, {a, c, c, a}};
         const glm::vec2 uv[4] = {{0, 1}, {1, 1}, {1, 0}, {0, 0}};
@@ -452,7 +456,7 @@ struct Mesher {
 
     // Emits the face f of box [lo, hi] (block-local units). Light and AO are computed for the whole face of
     // the cell it looks into (or its own cell for panes) and interpolated across the box.
-    void emitQuad(std::vector<Vertex>& out, int x, int y, int z, int f, const float* lo, const float* hi, uint8_t b,
+    void emitQuad(std::vector<Vertex>& out, int x, int y, int z, int f, const float* lo, const float* hi, BlockId b,
                   bool emissive, bool liquidTop, bool pane) {
         const BlockInfo& info = blockInfo(b);
         const int fx = x + (pane ? 0 : DIRS[f][0]), fy = y + (pane ? 0 : DIRS[f][1]), fz = z + (pane ? 0 : DIRS[f][2]);
@@ -538,14 +542,14 @@ MeshData buildMesh(const std::array<std::shared_ptr<Chunk>, 9>& nb, std::shared_
             const auto& src = nb[i]->blocks;
             for (int y = 0; y < CH; ++y)
                 for (int z = 0; z < CW; ++z)
-                    std::memcpy(&S.blk[ri(ox, y, oz + z)], &src[Chunk::index(0, y, z)], CW);
+                    std::memcpy(&S.blk[ri(ox, y, oz + z)], &src[Chunk::index(0, y, z)], CW * sizeof(BlockId));
         }
     }
     Mesher m;
     m.top = 0;
     for (int y = CH - 1; y >= 0 && !m.top; --y) {
-        const uint8_t* row = &S.blk[ri(0, y, 0)];
-        if (std::any_of(row, row + R * R, [](uint8_t b) { return b != Air; })) m.top = std::min(y + 1, CH - 1);
+        const BlockId* row = &S.blk[ri(0, y, 0)];
+        if (std::any_of(row, row + R * R, [](BlockId b) { return b != Air; })) m.top = std::min(y + 1, CH - 1);
     }
     m.computeLight();
     MeshData data = m.mesh();
@@ -568,11 +572,11 @@ Chunk* World::find(int cx, int cz) const {
     return it == chunks.end() ? nullptr : it->second.get();
 }
 
-uint8_t World::get(int x, int y, int z) const {
+BlockId World::get(int x, int y, int z) const {
     if (y < 0 || y >= CH) return Air;
     int cx = floorDiv(x, CW), cz = floorDiv(z, CW);
     Chunk* c = find(cx, cz);
-    return c ? c->get(x - cx * CW, y, z - cz * CW) : (uint8_t)Air;
+    return c ? c->get(x - cx * CW, y, z - cz * CW) : (BlockId)Air;
 }
 
 bool World::isLoaded(int x, int z) const { return find(floorDiv(x, CW), floorDiv(z, CW)) != nullptr; }
@@ -584,7 +588,7 @@ int World::topBlock(int x, int z) const {
     return -1;
 }
 
-void World::set(int x, int y, int z, uint8_t b) {
+void World::set(int x, int y, int z, BlockId b) {
     if (y < 0 || y >= CH) return;
     int cx = floorDiv(x, CW), cz = floorDiv(z, CW);
     Chunk* c = find(cx, cz);
@@ -694,18 +698,18 @@ fs::path World::chunkPath(int cx, int cz) const {
     return dir / "chunks" / ("c." + std::to_string(cx) + "." + std::to_string(cz) + ".bin");
 }
 
-// Run-length encoded block data: (uint16 count, uint8 block) pairs.
+// Run-length encoded block data: (uint16 count, uint16 block) pairs, little endian. ORD1 files had 8-bit blocks.
 void World::saveChunk(const Chunk& c) const {
     std::vector<uint8_t> out;
     for (int i = 0; i < CVOL;) {
         int j = i;
         while (j < CVOL && j - i < 65535 && c.blocks[j] == c.blocks[i]) ++j;
         int n = j - i;
-        out.push_back(n & 255); out.push_back(n >> 8); out.push_back(c.blocks[i]);
+        out.insert(out.end(), {(uint8_t)n, (uint8_t)(n >> 8), (uint8_t)c.blocks[i], (uint8_t)(c.blocks[i] >> 8)});
         i = j;
     }
     std::ofstream f(chunkPath(c.cx, c.cz), std::ios::binary);
-    f.write("ORD1", 4);
+    f.write("ORD2", 4);
     f.write((const char*)out.data(), out.size());
 }
 
@@ -713,13 +717,14 @@ bool World::loadChunk(Chunk& c) const {
     std::ifstream f(chunkPath(c.cx, c.cz), std::ios::binary);
     if (!f) return false;
     char magic[4];
-    if (!f.read(magic, 4) || std::memcmp(magic, "ORD1", 4)) return false;
+    if (!f.read(magic, 4) || std::memcmp(magic, "ORD", 3) || (magic[3] != '1' && magic[3] != '2')) return false;
+    const bool wide = magic[3] == '2';
     int i = 0;
-    uint8_t rec[3];
-    while (i < CVOL && f.read((char*)rec, 3)) {
-        int n = rec[0] | rec[1] << 8;
-        n = std::min(n, CVOL - i);
-        std::memset(&c.blocks[i], rec[2] < BlockCount ? rec[2] : (uint8_t)Air, n);
+    uint8_t rec[4];
+    while (i < CVOL && f.read((char*)rec, wide ? 4 : 3)) {
+        int n = std::min(rec[0] | rec[1] << 8, CVOL - i);
+        BlockId b = wide ? (BlockId)(rec[2] | rec[3] << 8) : fromLegacyId(rec[2]);
+        std::fill_n(&c.blocks[i], n, b < BlockCount ? b : (BlockId)Air);
         i += n;
     }
     return i == CVOL;

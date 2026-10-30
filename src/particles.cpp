@@ -12,7 +12,7 @@ bool solidAt(const World& world, glm::dvec3 p) {
 }
 }  // namespace
 
-void Particles::spawn(const World& world, glm::dvec3 pos, glm::vec3 vel, uint8_t block) {
+void Particles::spawn(const World& world, glm::dvec3 pos, glm::vec3 vel, BlockId block) {
     if (list.size() >= MAX) list.erase(list.begin());
     const BlockInfo& info = blockInfo(block);
     // A random 4x4 texel window of the block's side texture.
@@ -26,7 +26,7 @@ void Particles::spawn(const World& world, glm::dvec3 pos, glm::vec3 vel, uint8_t
     list.push_back({pos, vel, rnd(0.4f, 1.2f), rnd(0.05f, 0.09f), packed, light});
 }
 
-void Particles::burst(const World& world, glm::ivec3 p, uint8_t block) {
+void Particles::burst(const World& world, glm::ivec3 p, BlockId block) {
     if (block == Air || isLiquid(block)) return;
     for (int i = 0; i < 4; ++i)
         for (int j = 0; j < 4; ++j)
@@ -37,7 +37,7 @@ void Particles::burst(const World& world, glm::ivec3 p, uint8_t block) {
             }
 }
 
-void Particles::chip(const World& world, const RayHit& hit, uint8_t block) {
+void Particles::chip(const World& world, const RayHit& hit, BlockId block) {
     if (block == Air || isLiquid(block)) return;
     glm::dvec3 n(hit.normal);
     glm::dvec3 jitter(rnd(-0.4f, 0.4f), rnd(-0.4f, 0.4f), rnd(-0.4f, 0.4f));

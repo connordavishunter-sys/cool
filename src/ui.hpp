@@ -1,4 +1,6 @@
 #pragma once
+#include "blocks.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -67,7 +69,7 @@ public:
     void image(int tex, float x, float y, float w, float h, uint32_t color = WHITE, float u1 = 1);  // u1 < 1 crops the right side
     void nineSlice(int tex, float x, float y, float w, float h, int texSize, int border, uint32_t color = WHITE);
     void blockFace(int layer, float x, float y, float w, float h, uint32_t color = WHITE);
-    void blockIcon(uint8_t item, float cx, float cy, float size);  // isometric block, or a flat icon for other items
+    void blockIcon(BlockId item, float cx, float cy, float size);  // isometric block, or a flat icon for other items
     void tiledBackground(int layer, float brightness);
 
     float textWidth(const std::string& s, float size = 8) const;

@@ -12,8 +12,9 @@ const char* const kBlockTextures[] = {
 };
 const int kBlockTextureCount = sizeof(kBlockTextures) / sizeof(kBlockTextures[0]);
 
-const uint8_t kShapeMaterials[SHAPE_MATERIALS] = {Planks, Log, WhiteLight, RedLight, OrangeLight, YellowLight, BlueLight, PurpleLight, Stone};
-const uint8_t kPanelMaterials[PANEL_MATERIALS] = {Stone, Planks, Log};
+const BlockId kShapeMaterials[SHAPE_MATERIALS] = {Planks, Log, WhiteLight, RedLight, OrangeLight, YellowLight, BlueLight, PurpleLight, Stone};
+const BlockId kPanelMaterials[PANEL_MATERIALS] = {Stone, Planks, Log};
+static const int kSlotFace[6] = {3, 2, 0, 1, 4, 5}, kFaceSlot[6] = {2, 3, 1, 0, 4, 5};  // panel state slots <-> faces
 static const char* const kShapeNames[] = {"Slab", "Vertical Slab", "Stairs", "Sideways Stairs"};
 static const int kCanonicalState[] = {0, 5, 9, 17};  // the orientation shown in the inventory
 
@@ -90,49 +91,59 @@ static std::array<BlockInfo, BlockCount> buildBlocks() {
             b = kBase[kPanelMaterials[m]];
             b.name = panelNames[m].c_str();
             b.opaque = false;
-            b.mask = s % 7 >= 3 ? (s >= 7 ? 0xF0 : 0x0F) : 0;  // half the block or more covers a layer of cells
+            b.mask = s % 7 >= 3 ? FACE_HALF[kSlotFace[s / 7]] : 0;  // half the block or more covers a layer of cells
         }
     return t;
 }
 static const std::array<BlockInfo, BlockCount> kBlocks = buildBlocks();
 
-const BlockInfo& blockInfo(uint8_t b) { return kBlocks[b < BlockCount ? b : 0]; }
+const BlockInfo& blockInfo(BlockId b) { return kBlocks[b < BlockCount ? b : 0]; }
 
 Shape shapeOf(int s) { return s < 2 ? ShapeSlab : s < 6 ? ShapeVSlab : s < 14 ? ShapeStairs : ShapeSideStairs; }
-uint8_t shapedId(uint8_t material, int state) {
+BlockId shapedId(BlockId material, int state) {
     for (int m = 0; m < SHAPE_MATERIALS; ++m)
-        if (kShapeMaterials[m] == material) return (uint8_t)(ShapedBase + m * SHAPE_STATES + state);
+        if (kShapeMaterials[m] == material) return (BlockId)(ShapedBase + m * SHAPE_STATES + state);
     return Air;
 }
-uint8_t shapeMaterial(uint8_t b) { return kShapeMaterials[(b - ShapedBase) / SHAPE_STATES]; }
-uint8_t panelId(uint8_t material, int eighths, bool top) {
+BlockId shapeMaterial(BlockId b) { return kShapeMaterials[(b - ShapedBase) / SHAPE_STATES]; }
+BlockId panelId(BlockId material, int eighths, int face) {
     for (int m = 0; m < PANEL_MATERIALS; ++m)
-        if (kPanelMaterials[m] == material) return eighths >= 8 ? material : (uint8_t)(PanelBase + m * PANEL_STATES + top * 7 + eighths - 1);
+        if (kPanelMaterials[m] == material)
+            return eighths >= 8 ? material : (BlockId)(PanelBase + m * PANEL_STATES + kFaceSlot[face] * 7 + eighths - 1);
     return Air;
 }
-uint8_t panelMaterial(uint8_t b) { return kPanelMaterials[(b - PanelBase) / PANEL_STATES]; }
+BlockId fromLegacyId(uint8_t b) {
+    constexpr int OLD_PANEL_STATES = 14;  // 8-bit saves only had floor and ceiling panels
+    if (b < PanelBase) return b;
+    int i = b - PanelBase;
+    return i < PANEL_MATERIALS * OLD_PANEL_STATES ? (BlockId)(PanelBase + i / OLD_PANEL_STATES * PANEL_STATES + i % OLD_PANEL_STATES) : (BlockId)Air;
+}
+int panelFace(BlockId b) { return kSlotFace[(b - PanelBase) % PANEL_STATES / 7]; }
+BlockId panelMaterial(BlockId b) { return kPanelMaterials[(b - PanelBase) / PANEL_STATES]; }
 
-const uint8_t* tintLoss(uint8_t b) {
+const uint8_t* tintLoss(BlockId b) {
     // Matched to the textures' average colour; indexed by the stained glass texture layer (18-22).
     static const uint8_t loss[6][3] = {{0, 0, 0}, {1, 12, 12}, {0, 7, 13}, {0, 2, 10}, {9, 1, 10}, {4, 11, 3}};
     int t = blockInfo(b).tex[0] - 17;
     return loss[blockInfo(b).kind == KindTranslucent && t >= 1 && t <= 5 ? t : 0];
 }
-int shapeState(uint8_t b) { return (b - ShapedBase) % SHAPE_STATES; }
-uint8_t itemOf(uint8_t b) {
-    if (isPanel(b)) return panelId(panelMaterial(b), 1, false);
+int shapeState(BlockId b) { return (b - ShapedBase) % SHAPE_STATES; }
+BlockId itemOf(BlockId b) {
+    if (isPanel(b)) return panelId(panelMaterial(b), 1, 3);
     return isShaped(b) ? shapedId(shapeMaterial(b), kCanonicalState[shapeOf(shapeState(b))]) : b;
 }
 
-int blockBoxes(uint8_t b, uint8_t shape, Box out[8]) {
+int blockBoxes(BlockId b, uint8_t shape, Box out[8]) {
     const BlockInfo& info = blockInfo(b);
     int n = 0;
     auto add = [&](float x0, float y0, float z0, float x1, float y1, float z1, uint8_t skip = 0) {
         out[n++] = {{x0, y0, z0}, {x1, y1, z1}, skip};
     };
     if (isPanel(b)) {
-        float h = panelEighths(b) / 8.0f;
-        panelTop(b) ? add(0, 1 - h, 0, 1, 1, 1) : add(0, 0, 0, 1, h, 1);
+        const int f = panelFace(b), axis = f / 2;
+        float lo[3] = {0, 0, 0}, hi[3] = {1, 1, 1};
+        (f % 2 ? hi : lo)[axis] = f % 2 ? panelEighths(b) / 8.0f : 1 - panelEighths(b) / 8.0f;
+        add(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
     } else if (info.model == ModelCross) {
         add(0.25f, 0, 0.25f, 0.75f, 0.85f, 0.75f);
     } else if (info.model == ModelPane) {
@@ -159,9 +170,9 @@ int blockBoxes(uint8_t b, uint8_t shape, Box out[8]) {
     return n;
 }
 
-const std::vector<uint8_t>& creativeItems() {
-    static const std::vector<uint8_t> items = [] {
-        std::vector<uint8_t> v = {
+const std::vector<BlockId>& creativeItems() {
+    static const std::vector<BlockId> items = [] {
+        std::vector<BlockId> v = {
             Grass, Dirt, Stone, Sand, Planks, Log, Leaves, Glass, Water, Lava,
             RedFlower, OrangeFlower, YellowFlower, GreenFlower, BlueFlower, PurpleFlower,
             RedStainedGlass, OrangeStainedGlass, YellowStainedGlass, GreenStainedGlass, PurpleStainedGlass,
@@ -169,11 +180,11 @@ const std::vector<uint8_t>& creativeItems() {
             WhiteLight, RedLight, OrangeLight, YellowLight, BlueLight, PurpleLight,
         };
         for (bool lights : {false, true}) {  // building materials and panels first, then the lights
-            for (uint8_t m : kShapeMaterials)
+            for (BlockId m : kShapeMaterials)
                 if (isEmissive(m) == lights)
                     for (int s : kCanonicalState) v.push_back(shapedId(m, s));
             if (!lights)
-                for (uint8_t m : kPanelMaterials) v.push_back(panelId(m, 1, false));
+                for (BlockId m : kPanelMaterials) v.push_back(panelId(m, 1, 3));
         }
         return v;
     }();
